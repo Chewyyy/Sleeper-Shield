@@ -18,11 +18,70 @@ const DEFAULT_SETTINGS = {
 };
 
 const POSITION_ORDER = ['QB', 'RB', 'WR', 'TE', 'DL', 'LB', 'DB', 'K', 'DEF'];
-const PICK_BASE_VALUES = { 1: 60, 2: 30, 3: 14, 4: 7, 5: 3, 6: 1 };
+const PICK_BASE_VALUES = { 1: 4200, 2: 1600, 3: 650, 4: 275, 5: 110, 6: 50 };
 const FLEX_SLOTS = new Set(['FLEX', 'REC_FLEX', 'WRRB_FLEX', 'WRT', 'RB_WR_TE']);
 const SUPER_FLEX_SLOTS = new Set(['SUPER_FLEX', 'SUPERFLEX', 'OP']);
 const IDP_FLEX_SLOTS = new Set(['IDP_FLEX', 'DL_LB_DB']);
 const RECENT_GAME_COUNT = 5;
+
+
+// KTC-style dynasty market anchors. These are intentionally offline, approximate anchors, not a live KTC scrape.
+// They give the app a dynasty-market spine so stat-efficient players cannot leapfrog higher-value assets solely from PPG.
+const KTC_STYLE_MARKET_ANCHORS = {
+  'josh allen': 9985,
+  'bijan robinson': 9980,
+  'jamar chase': 9960,
+  'ja\'marr chase': 9960,
+  'jahmyr gibbs': 9880,
+  'jaxon smith njigba': 9630,
+  'jaxon smith-njigba': 9630,
+  'drake maye': 9420,
+  'puka nacua': 8710,
+  'brock bowers': 8110,
+  'caleb williams': 8030,
+  'amon ra st brown': 7900,
+  'amon-ra st. brown': 7900,
+  'amon-ra st brown': 7900,
+  'jayden daniels': 7840,
+  'justin jefferson': 7680,
+  'ashton jeanty': 7680,
+  'lamar jackson': 7640,
+  'malik nabers': 7490,
+  'joe burrow': 7440,
+  'trey mcbride': 7380,
+  'patrick mahomes': 7350,
+  'jalen hurts': 7300,
+  'ceedee lamb': 7150,
+  'c d lamb': 7150,
+  'cj stroud': 7000,
+  'c.j. stroud': 7000,
+  'justin herbert': 6900,
+  'malik washington': 2500,
+  'kyler murray': 6350,
+  'jordan love': 6250,
+  'anthony richardson': 5900,
+  'bo nix': 5850,
+  'baker mayfield': 5600,
+  'brock purdy': 5450,
+  'dak prescott': 5350,
+  'tua tagovailoa': 5200,
+  'jared goff': 5000,
+  'trevor lawrence': 4900,
+  'sam darnold': 3500,
+  'matthew stafford': 3000,
+  'aaron rodgers': 1200
+};
+
+const KTC_STYLE_QB_CEILING_BY_ANCHOR = [
+  { maxAnchor: 99999, ceiling: 9999 },
+  { maxAnchor: 9000, ceiling: 9650 },
+  { maxAnchor: 8000, ceiling: 8750 },
+  { maxAnchor: 7000, ceiling: 7900 },
+  { maxAnchor: 6000, ceiling: 7050 },
+  { maxAnchor: 5000, ceiling: 6100 },
+  { maxAnchor: 4000, ceiling: 5150 },
+  { maxAnchor: 0, ceiling: 4300 }
+];
 
 const state = {
   nflState: null,
@@ -698,10 +757,25 @@ function statusAdjustment(player) {
   return 0;
 }
 
+function dynastyMarketNameKey(name = '') {
+  return String(name || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function playerMarketAnchorKey(player, playerId = '') {
+  const direct = dynastyMarketNameKey(player?.full_name || player?.metadata?.full_name || player?.search_full_name || '');
+  if (direct) return direct;
+  return dynastyMarketNameKey(playerName(playerId));
+}
+
 function rankFallbackValue(player) {
   const rank = safeNumber(player?.search_rank, 9999);
-  if (!rank || rank >= 9999) return 8;
-  return Math.max(5, 45 - Math.log(rank + 1) * 6.5);
+  if (!rank || rank >= 9999) return 900;
+  return rankToKtcValue(rank, player?.position || 'UNK');
 }
 
 function clampNumber(value, min, max) {
@@ -709,27 +783,47 @@ function clampNumber(value, min, max) {
   return Math.min(max, Math.max(min, num));
 }
 
-function marketAnchorValue(player, position = '') {
-  const rank = safeNumber(player?.search_rank, 9999);
-  if (!rank || rank >= 9999) {
-    if (position === 'QB') return 58;
-    return rankFallbackValue(player);
-  }
+function rankToKtcValue(rank, position = 'UNK') {
+  const r = Math.max(1, safeNumber(rank, 9999));
+  // Approximate KTC-style dynasty curve: very steep at the top, then long tail.
+  let value = Math.round(9800 * Math.pow(r, -0.31));
+  value = clampNumber(value, 120, 9600);
 
+  // Sleeper search_rank can be overly optimistic for efficient veteran QBs, so compress fallback QB anchors.
   if (position === 'QB') {
-    if (rank <= 12) return 94;
-    if (rank <= 24) return 88;
-    if (rank <= 40) return 82;
-    if (rank <= 65) return 75;
-    if (rank <= 95) return 68;
-    if (rank <= 130) return 61;
-    if (rank <= 180) return 54;
-    if (rank <= 250) return 47;
-    if (rank <= 350) return 40;
-    return Math.max(28, 40 - Math.log(rank - 300) * 3.5);
+    if (r <= 12) value = Math.min(value, 7600);
+    else if (r <= 30) value = Math.min(value, 6500);
+    else if (r <= 60) value = Math.min(value, 5600);
+    else if (r <= 100) value = Math.min(value, 4800);
+    else value = Math.min(value, 4000);
   }
 
-  return rankFallbackValue(player);
+  return value;
+}
+
+function ktcStyleMarketAnchor(player, playerId = '') {
+  const pos = player?.position || playerPrimaryPosition(playerId) || 'UNK';
+  const key = playerMarketAnchorKey(player, playerId);
+  const anchored = KTC_STYLE_MARKET_ANCHORS[key];
+  if (Number.isFinite(anchored)) return anchored;
+
+  const rank = safeNumber(player?.search_rank, 9999);
+  let value = rankToKtcValue(rank, pos);
+
+  // Dynasty positional smoothing when no named market anchor is available.
+  const age = safeNumber(player?.age, 0);
+  if (pos === 'RB' && age && age > 28) value *= 0.72;
+  if (pos === 'WR' && age && age > 31) value *= 0.76;
+  if (pos === 'TE' && age && age <= 25) value *= 1.08;
+  if (pos === 'QB' && age && age <= 25) value *= 1.05;
+  if (['K', 'DEF'].includes(pos)) value = Math.min(value, 450);
+  if (['DL', 'LB', 'DB'].includes(pos)) value = Math.min(value, 1800);
+
+  return Math.round(clampNumber(value, 80, 9800));
+}
+
+function marketAnchorValue(player, position = '', playerId = '') {
+  return ktcStyleMarketAnchor({ ...(player || {}), position: position || player?.position }, playerId);
 }
 
 function sumStatsFromRecord(rec, keys = []) {
@@ -750,45 +844,132 @@ function qbRushingAdjustment(rec) {
   const rushAttPerGame = rushAtt / rec.games;
 
   let adj = 0;
-  adj += clampNumber(rushYdsPerGame / 6, 0, 9);
-  adj += clampNumber(rushTdsPerGame * 10, 0, 7);
-  if (rushAttPerGame >= 6) adj += 2;
-  if (rushYdsPerGame < 10 && rec.ppg < 19) adj -= 4;
-  else if (rushYdsPerGame < 15 && rec.ppg < 18) adj -= 2;
-  return clampNumber(adj, -5, 16);
+  adj += clampNumber(rushYdsPerGame * 10, 0, 420);
+  adj += clampNumber(rushTdsPerGame * 520, 0, 420);
+  if (rushAttPerGame >= 6) adj += 120;
+  if (rushYdsPerGame < 10 && rec.ppg < 19) adj -= 220;
+  else if (rushYdsPerGame < 15 && rec.ppg < 18) adj -= 120;
+  return clampNumber(adj, -300, 800);
+}
+
+function productionAdjustmentValue(rec, position = 'UNK') {
+  if (!rec?.games) return 0;
+  const ppg = safeNumber(rec.ppg, 0);
+  const games = safeNumber(rec.games, 0);
+  let baseline = 10;
+  let scale = 85;
+  if (position === 'QB') { baseline = 17; scale = 115; }
+  else if (position === 'RB') { baseline = 10.5; scale = 105; }
+  else if (position === 'WR') { baseline = 10; scale = 100; }
+  else if (position === 'TE') { baseline = 8; scale = 115; }
+  else if (['DL', 'LB', 'DB'].includes(position)) { baseline = 8; scale = 90; }
+  const ppgAdj = clampNumber((ppg - baseline) * scale, -650, 850);
+  const samplePenalty = games < 5 ? -250 : games < 10 ? -100 : 0;
+  return ppgAdj + samplePenalty;
+}
+
+function recentAdjustmentValue(rec) {
+  if (!rec?.games) return 0;
+  const ppg = safeNumber(rec.ppg, 0);
+  const last5 = safeNumber(rec.last4Avg, ppg);
+  return clampNumber((last5 - ppg) * 65, -350, 350) * state.settings.recentWeight;
+}
+
+function dynastyAgeAdjustmentValue(player, league) {
+  if (!player || !isDynastyLeague(league)) return 0;
+  const age = safeNumber(player.age, 0);
+  if (!age) return 0;
+  const pos = player.position || 'UNK';
+  let adj = 0;
+  if (pos === 'QB') adj = age <= 24 ? 520 : age <= 28 ? 360 : age <= 32 ? 150 : age <= 36 ? -250 : -900;
+  else if (pos === 'RB') adj = age <= 23 ? 620 : age <= 25 ? 250 : age <= 27 ? -150 : age <= 29 ? -700 : -1400;
+  else if (pos === 'WR') adj = age <= 24 ? 500 : age <= 27 ? 250 : age <= 30 ? -100 : -700;
+  else if (pos === 'TE') adj = age <= 25 ? 360 : age <= 29 ? 160 : age <= 32 ? -160 : -650;
+  else if (['DL', 'LB', 'DB'].includes(pos)) adj = age <= 27 ? 180 : age <= 31 ? 40 : -280;
+  return adj * state.settings.ageWeight;
+}
+
+function statusAdjustmentValue(player) {
+  const status = String(player?.injury_status || player?.status || '').toLowerCase();
+  if (!status) return 0;
+  if (['ir', 'out', 'pup', 'suspended'].some(s => status.includes(s))) return -1200;
+  if (status.includes('doubtful')) return -700;
+  if (status.includes('questionable')) return -250;
+  if (status.includes('inactive')) return -500;
+  return 0;
+}
+
+function scarcityAdjustmentValue(league, playerId) {
+  return scarcityAdjustment(league, playerId) * 85;
+}
+
+function positionPercentileAdjustmentValue(percentile, position = 'UNK') {
+  const center = position === 'QB' ? 0.65 : 0.55;
+  return clampNumber((percentile - center) * 850, -450, 450);
+}
+
+function qbCeilingForAnchor(anchor) {
+  for (const row of KTC_STYLE_QB_CEILING_BY_ANCHOR) {
+    if (anchor >= row.maxAnchor) return row.ceiling;
+  }
+  return 4300;
 }
 
 function qbValueDetail(league, playerId, player, rec, percentile) {
-  const anchor = marketAnchorValue(player, 'QB');
-  const ppg = safeNumber(rec?.ppg, 0);
-  const last5 = safeNumber(rec?.last4Avg, ppg);
-  const productionAdj = rec?.games
-    ? clampNumber((ppg - 16) * 1.9, -11, 13)
-    : 0;
-  const percentileAdj = rec?.games
-    ? clampNumber((percentile - 0.65) * 15, -6, 6)
-    : 0;
-  const recentAdj = rec?.games
-    ? clampNumber((last5 - ppg) * 0.7, -4, 4) * state.settings.recentWeight
-    : 0;
+  const anchor = ktcStyleMarketAnchor(player, playerId);
+  const productionAdj = productionAdjustmentValue(rec, 'QB');
+  const percentileAdj = positionPercentileAdjustmentValue(percentile, 'QB') * 0.45;
+  const recentAdj = recentAdjustmentValue(rec) * 0.45;
   const rushingAdj = qbRushingAdjustment(rec);
-  const dynastyAdj = ageAdjustment(player, league) * 0.45;
-  const statusAdj = statusAdjustment(player);
-  const scarcityAdj = scarcityAdjustment(league, playerId) * 0.35;
+  const dynastyAdj = dynastyAgeAdjustmentValue(player, league) * 0.55;
+  const statusAdj = statusAdjustmentValue(player);
+  const scarcityAdj = scarcityAdjustmentValue(league, playerId) * 0.25;
   const uncapped = anchor + productionAdj + percentileAdj + recentAdj + rushingAdj + dynastyAdj + statusAdj + scarcityAdj;
-  const banded = clampNumber(uncapped, anchor - 12, anchor + 18);
+
+  // KTC-style guardrail: production can move QBs inside a market tier, but cannot jump multiple dynasty tiers.
+  const floor = Math.max(250, anchor - 950);
+  const ceiling = Math.min(qbCeilingForAnchor(anchor), anchor + 950);
+  const banded = clampNumber(uncapped, floor, ceiling);
   return {
     raw: banded,
     components: {
-      marketAnchor: roundNum(anchor, 1),
-      productionAdj: roundNum(productionAdj, 1),
-      percentileAdj: roundNum(percentileAdj, 1),
-      recentAdj: roundNum(recentAdj, 1),
-      rushingAdj: roundNum(rushingAdj, 1),
-      dynastyAdj: roundNum(dynastyAdj, 1),
-      scarcityAdj: roundNum(scarcityAdj, 1),
-      statusAdj: roundNum(statusAdj, 1),
-      banded: roundNum(banded, 1)
+      marketAnchor: roundNum(anchor, 0),
+      productionAdj: roundNum(productionAdj, 0),
+      percentileAdj: roundNum(percentileAdj, 0),
+      recentAdj: roundNum(recentAdj, 0),
+      rushingAdj: roundNum(rushingAdj, 0),
+      dynastyAdj: roundNum(dynastyAdj, 0),
+      scarcityAdj: roundNum(scarcityAdj, 0),
+      statusAdj: roundNum(statusAdj, 0),
+      banded: roundNum(banded, 0)
+    }
+  };
+}
+
+function ktcStyleValueDetail(league, playerId, player, rec, percentile) {
+  const pos = player?.position || playerPrimaryPosition(playerId) || 'UNK';
+  const anchor = ktcStyleMarketAnchor(player, playerId);
+  const productionAdj = productionAdjustmentValue(rec, pos);
+  const percentileAdj = positionPercentileAdjustmentValue(percentile, pos);
+  const recentAdj = recentAdjustmentValue(rec);
+  const dynastyAdj = dynastyAgeAdjustmentValue(player, league);
+  const statusAdj = statusAdjustmentValue(player);
+  const scarcityAdj = scarcityAdjustmentValue(league, playerId);
+  const uncapped = anchor + productionAdj + percentileAdj + recentAdj + dynastyAdj + statusAdj + scarcityAdj;
+  const floor = Math.max(40, anchor - 1400);
+  const ceiling = Math.min(9999, anchor + 1400);
+  const banded = clampNumber(uncapped, floor, ceiling);
+  return {
+    raw: banded,
+    components: {
+      marketAnchor: roundNum(anchor, 0),
+      productionAdj: roundNum(productionAdj, 0),
+      percentileAdj: roundNum(percentileAdj, 0),
+      recentAdj: roundNum(recentAdj, 0),
+      dynastyAdj: roundNum(dynastyAdj, 0),
+      scarcityAdj: roundNum(scarcityAdj, 0),
+      statusAdj: roundNum(statusAdj, 0),
+      banded: roundNum(banded, 0)
     }
   };
 }
@@ -796,7 +977,7 @@ function qbValueDetail(league, playerId, player, rec, percentile) {
 function positionMultiplier(player, league) {
   const pos = player?.position || 'UNK';
   const superflex = isSuperflexLeague(league);
-  if (pos === 'QB') return superflex ? 1.1 : 0.92;
+  if (pos === 'QB') return 1;
   if (pos === 'TE') return isTightEndPremium(league) ? 1.15 : 1;
   if (['DL', 'LB', 'DB'].includes(pos)) return idpSlotCount(league) >= 3 ? 0.92 : 0.72;
   if (pos === 'K' || pos === 'DEF') return 0.35;
@@ -817,25 +998,17 @@ function playerValue(league, playerId) {
 
   if (pos === 'QB') {
     const qb = qbValueDetail(league, key, player, rec, percentile);
-    raw = qb.raw * positionMultiplier(player, league);
-    valueModel = 'QB market-tier anchor';
+    raw = qb.raw;
+    valueModel = 'KTC-style QB tier model';
     components = qb.components;
   } else {
-    const recent = rec ? Math.min(25, Math.max(-10, (rec.last4Avg - rec.ppg) * 1.6)) * state.settings.recentWeight : 0;
-    const startComponent = rec?.source === 'historical' ? 0 : Math.min(9, rec?.startRate * 9 || 0);
-    const production = rec && rec.games ? (percentile * 68 + Math.min(28, rec.ppg * 1.4) + startComponent) : rankFallbackValue(player);
-    const scarcity = scarcityAdjustment(league, key);
-    raw = (production + recent + scarcity + ageAdjustment(player, league) + statusAdjustment(player)) * positionMultiplier(player, league);
-    components = {
-      production: roundNum(production, 1),
-      recentAdj: roundNum(recent, 1),
-      scarcityAdj: roundNum(scarcity, 1),
-      dynastyAdj: roundNum(ageAdjustment(player, league), 1),
-      statusAdj: roundNum(statusAdjustment(player), 1)
-    };
+    const ktc = ktcStyleValueDetail(league, key, player, rec, percentile);
+    raw = ktc.raw * positionMultiplier(player, league);
+    valueModel = 'KTC-style market model';
+    components = ktc.components;
   }
 
-  const value = Math.max(1, roundNum(raw, 1));
+  const value = Math.max(1, roundNum(raw, 0));
   const detail = {
     value,
     ppg: roundNum(rec?.ppg || 0, 1),
@@ -1451,13 +1624,13 @@ function renderTradeModelExplanation(league) {
   return `
     <section class="result-card model-explanation">
       <h3>What the trade model used</h3>
-      <p>The player values are built from the league's scoring settings, historical production, positional scarcity, roster format, age/status adjustments, recent form, and market/tier anchoring.</p>
+      <p>The player values now use a KTC-style dynasty scale: market/tier anchor first, then controlled adjustments for league scoring, production, recent form, positional scarcity, age/status, rushing upside, and roster format.</p>
       <ul>
-        <li><strong>Quarterbacks:</strong> QB value now starts with a Sleeper market-rank/tier anchor. Production, recent form, rushing upside, age, and superflex scarcity can move a QB within a band, but efficient PPG alone can no longer push a lower-market QB to QB1.</li>
+        <li><strong>Quarterbacks:</strong> QB value starts with an offline KTC-style market/tier anchor. Production, recent form, rushing upside, age, and superflex scarcity can move a QB within a capped band, but efficient PPG alone cannot push a lower-market QB above elite dynasty QBs.</li>
         <li><strong>Current year:</strong> league matchup data for ${escapeHtml(league.season || currentSeasonNumber(league))}, including PPG, total points, start rate, last-five-game trend, and positional percentile.</li>
         <li><strong>Previous years:</strong> best-effort historical stat fetches scored under this league's scoring rules. Loaded seasons: ${escapeHtml(seasons)}.</li>
         <li><strong>League format:</strong> ${escapeHtml(formatText)}.</li>
-        <li><strong>Draft picks:</strong> round value, years until the pick conveys, and the original owner's projected roster strength to estimate early/mid/late pick value.</li>
+        <li><strong>Draft picks:</strong> KTC-style round value, years until the pick conveys, and the original owner's projected roster strength to estimate early/mid/late pick value.</li>
         <li><strong>Team needs:</strong> the app simulates each roster before and after the trade using starter slots, flex/superflex rules, and positional depth.</li>
       </ul>
     </section>`;
