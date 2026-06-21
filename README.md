@@ -26,6 +26,7 @@ http://localhost:5173
 - Trade tool supports players and draft picks from each selected team's asset dropdown.
 - Trade evaluation includes player stat cards using the most recent played seasons, avoiding unplayed future weeks.
 - Draft-pick values estimate early/mid/late value from the original owner's roster strength.
+- QB values now use a market/tier anchor first, then adjust for production, recent form, rushing upside, age, status, and superflex format so efficient PPG alone cannot create a false QB1.
 - Recap generator creates week/month/season/offseason league packages to paste into ChatGPT.
 - Draft recap generator summarizes draft classes, top picks, current model value from drafted players, draft-day trades, and traded future picks.
 

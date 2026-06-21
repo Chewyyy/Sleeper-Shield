@@ -439,29 +439,8 @@ input[type="range"] { min-height: 28px; padding: 0; accent-color: var(--accent-s
 .trend-arrow { color: var(--good); font-weight: 850; }
 .trend-arrow.down { color: var(--bad); }
 .card-tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin: 16px 0; padding: 4px; border: 1px solid var(--line); border-radius: 999px; background: rgba(255,255,255,0.045); }
-.card-tabs button { min-height: 34px; padding: 8px 7px; border: 0; border-radius: 999px; color: var(--muted-2); text-align: center; font-size: 0.74rem; font-weight: 760; background: transparent; box-shadow: none; }
-.card-tabs button.active { background: var(--accent-soft); color: #e8f3ff; }
-.card-tabs button:active { transform: scale(0.98); }
-.player-card-pane { display: none; }
-.player-card-pane.active { display: block; }
-.full-game-log { max-height: 420px; overflow: auto; padding-right: 2px; }
-
-.sleeper-game-log { display: grid; gap: 18px; }
-.sleeper-season-block h4 { margin: 0 0 10px; color: var(--text); font-size: 1.35rem; font-weight: 850; letter-spacing: -0.03em; }
-.sleeper-log-section { margin-bottom: 12px; }
-.sleeper-log-subtitle { margin: 0 0 8px; color: var(--muted); font-size: 0.86rem; font-weight: 820; text-transform: uppercase; letter-spacing: 0.08em; }
-.sleeper-log-scroll { overflow-x: auto; padding-bottom: 4px; }
-.sleeper-log-table { width: max-content; min-width: 100%; border-collapse: separate; border-spacing: 6px 6px; }
-.sleeper-log-table th { color: #f0f4ff; font-size: 0.76rem; font-weight: 840; text-transform: uppercase; letter-spacing: 0.06em; text-align: center; padding: 0 2px 4px; white-space: nowrap; }
-.sleeper-log-table td { text-align: center; white-space: nowrap; }
-.sleeper-log-table .wk-cell, .sleeper-log-table .opp-cell { color: var(--text); font-weight: 780; font-size: 0.84rem; }
-.sleeper-log-table .opp-cell { min-width: 54px; }
-.sleeper-log-table .log-cell { min-width: 54px; padding: 8px 8px; border-radius: 6px; font-size: 0.88rem; font-weight: 820; color: #0d1622; border: 1px solid rgba(255,255,255,0.08); }
-.sleeper-log-table .tone-good { background: #bed89b; }
-.sleeper-log-table .tone-ok { background: #e6d07a; }
-.sleeper-log-table .tone-bad { background: #eaa0a2; }
-.sleeper-log-table .tone-neutral { background: #a8acb5; color: #1b2431; }
-.sleeper-log-table.compact-fallback .log-cell { min-width: 66px; }
+.card-tabs span { padding: 8px 7px; border-radius: 999px; color: var(--muted-2); text-align: center; font-size: 0.74rem; font-weight: 760; }
+.card-tabs span.active { background: var(--accent-soft); color: #e8f3ff; }
 .season-label { margin: 0 0 12px; color: var(--muted); font-size: 0.8rem; font-weight: 780; text-transform: uppercase; letter-spacing: 0.08em; }
 .stat-tile-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 10px; }
 .stat-tile-grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -473,26 +452,6 @@ input[type="range"] { min-height: 28px; padding: 0; accent-color: var(--accent-s
 .mini-log { display: grid; gap: 8px; margin-top: 12px; }
 .mini-log-row { display: grid; grid-template-columns: 58px 1fr 60px; gap: 10px; align-items: center; padding: 9px 10px; border: 1px solid var(--line); border-radius: 14px; background: rgba(255,255,255,0.04); color: var(--muted-2); font-size: 0.86rem; }
 .mini-log-row strong { color: var(--text); }
-
-.sleeper-game-log { display: grid; gap: 18px; margin-top: 8px; }
-.sleeper-season-block { display: grid; gap: 10px; }
-.sleeper-season-block h4 { margin: 0; color: var(--muted); font-size: 0.82rem; font-weight: 820; text-transform: uppercase; letter-spacing: 0.08em; }
-.sleeper-log-section { display: grid; gap: 8px; }
-.sleeper-log-subtitle { color: #dfe7f2; font-size: 0.8rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; }
-.sleeper-log-scroll { overflow-x: auto; border: 1px solid rgba(90, 120, 180, 0.18); border-radius: 18px; background: linear-gradient(180deg, rgba(19,31,56,0.9), rgba(8,11,18,0.96)); box-shadow: inset 0 1px 0 rgba(255,255,255,0.05); }
-.sleeper-log-table { width: 100%; min-width: 720px; border-collapse: separate; border-spacing: 4px; font-size: 0.78rem; color: #edf4ff; }
-.sleeper-log-table thead th { padding: 8px 6px; color: #f3f7ff; font-size: 0.74rem; font-weight: 840; text-align: center; text-transform: uppercase; letter-spacing: 0.04em; background: rgba(15, 26, 48, 0.9); }
-.sleeper-log-table thead tr:first-child th { border-bottom: 1px solid rgba(255,255,255,0.08); }
-.sleeper-log-table tbody td { padding: 9px 7px; text-align: center; }
-.sleeper-log-table .wk-cell, .sleeper-log-table .opp-cell { background: transparent; color: #f3f6fb; font-weight: 780; }
-.sleeper-log-table .opp-cell { color: #ffac5d; }
-.sleeper-log-table .log-cell { min-width: 42px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); font-weight: 800; }
-.sleeper-log-table .tone-good { background: #b7d48b; color: #24330f; }
-.sleeper-log-table .tone-ok { background: #ead47a; color: #3a3110; }
-.sleeper-log-table .tone-bad { background: #e6a1a1; color: #442021; }
-.sleeper-log-table .tone-neutral { background: rgba(196, 205, 220, 0.7); color: #1e2632; }
-.sleeper-log-table.compact-fallback { min-width: 420px; }
-.sleeper-log-table.compact-fallback .wk-cell { width: 52px; }
 .compare-verdict { padding: 15px; margin-bottom: 15px; }
 .compare-verdict strong { display: block; margin-bottom: 4px; color: var(--good); }
 .compare-bars { display: grid; gap: 11px; }
@@ -654,20 +613,12 @@ input[type="range"] { min-height: 28px; padding: 0; accent-color: var(--accent-s
   .recent-strip { gap: 3px; font-size: 0.62rem; }
   .recent-dot { width: 7px; height: 7px; }
   .card-tabs { margin: 14px 0; }
-  .card-tabs button { padding: 8px 3px; font-size: 0.65rem; }
+  .card-tabs span { padding: 8px 3px; font-size: 0.65rem; }
   .stat-tile-grid, .stat-tile-grid.three { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .stat-tile { min-height: 72px; padding: 10px 8px; border-radius: 15px; }
   .stat-tile strong { font-size: 1.26rem; }
   .player-note { padding: 12px; align-items: flex-start; flex-direction: column; gap: 4px; }
   .mini-log-row { grid-template-columns: 52px 1fr 48px; gap: 8px; padding: 8px 9px; font-size: 0.76rem; }
-  .sleeper-season-block h4 { font-size: 1.18rem; }
-  .sleeper-log-table { border-spacing: 4px 4px; }
-  .sleeper-log-table th { font-size: 0.68rem; }
-  .sleeper-log-table .wk-cell, .sleeper-log-table .opp-cell { font-size: 0.75rem; }
-  .sleeper-log-table .log-cell { min-width: 48px; padding: 7px 6px; font-size: 0.78rem; }
-  .sleeper-log-table { min-width: 660px; font-size: 0.72rem; }
-  .sleeper-log-table thead th { font-size: 0.66rem; padding: 7px 5px; }
-  .sleeper-log-table tbody td { padding: 8px 6px; }
   .compare-row { grid-template-columns: 1fr; gap: 7px; }
   .compare-meter { height: 28px; }
   ::-webkit-scrollbar { display: none; }
