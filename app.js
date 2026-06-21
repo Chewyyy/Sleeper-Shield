@@ -2015,6 +2015,34 @@ function setPlayerCompareInput(target, playerId) {
   renderPlayerComparison();
 }
 
+function selectedCompareIds() {
+  return {
+    A: findPlayerFromInput($('playerCompareA')?.value || '')?.id || '',
+    B: findPlayerFromInput($('playerCompareB')?.value || '')?.id || ''
+  };
+}
+
+function togglePlayerValueSelection(playerId) {
+  const player = state.playerSearch.find(p => String(p.id) === String(playerId));
+  if (!player) return;
+  const selected = selectedCompareIds();
+
+  if (String(selected.A) === String(playerId)) {
+    $('playerCompareA').value = '';
+  } else if (String(selected.B) === String(playerId)) {
+    $('playerCompareB').value = '';
+  } else if (!selected.A) {
+    $('playerCompareA').value = player.label;
+  } else if (!selected.B) {
+    $('playerCompareB').value = player.label;
+  } else {
+    return;
+  }
+
+  renderPlayerComparison();
+  renderPlayerValues();
+}
+
 function renderPlayerComparison() {
   const league = getSelectedLeague('playerLeagueSelect');
   const el = $('playerCompareOutput');
@@ -2140,10 +2168,17 @@ function renderPlayerValues() {
     .filter(v => !query || `${v.name} ${v.position} ${getPlayer(v.playerId)?.team || ''}`.toLowerCase().includes(query))
     .sort((a, b) => b.value - a.value)
     .slice(0, 250);
-  el.innerHTML = `<table><thead><tr><th>Player</th><th>Pos</th><th>Value</th><th>PPG</th><th>Last 5</th><th>Games</th><th>Model</th><th>Status</th></tr></thead><tbody>${rows.map(v => `
-    <tr class="player-row-clickable" data-player-id="${escapeHtml(v.playerId)}"><td>${escapeHtml(v.name)}<small>${escapeHtml(getPlayer(v.playerId)?.team || 'FA')} · click to load card</small></td><td>${escapeHtml(v.position)}</td><td><strong>${roundNum(v.value)}</strong></td><td>${v.ppg}</td><td>${v.last4}</td><td>${v.games}</td><td>${escapeHtml(v.valueModel || v.source || '')}</td><td>${escapeHtml(v.status || '')}</td></tr>`).join('')}</tbody></table>`;
+  const selected = selectedCompareIds();
+  el.innerHTML = `<table><thead><tr><th>Player</th><th>Pos</th><th>Value</th><th>PPG</th><th>Last 5</th><th>Games</th><th>Model</th><th>Status</th></tr></thead><tbody>${rows.map(v => {
+    const isA = String(selected.A) === String(v.playerId);
+    const isB = String(selected.B) === String(v.playerId);
+    const selectedClass = isA ? ' selected-a' : isB ? ' selected-b' : '';
+    const selectionText = isA ? 'Selected 1 · click to remove' : isB ? 'Selected 2 · click to remove' : selected.A && selected.B ? '2 selected · click selected row to change' : 'click to select';
+    const selectionBadge = isA ? '<span class="selection-badge first">1</span>' : isB ? '<span class="selection-badge second">2</span>' : '';
+    return `<tr class="player-row-clickable${selectedClass}" data-player-id="${escapeHtml(v.playerId)}"><td><div class="player-table-name-row">${selectionBadge}<span>${escapeHtml(v.name)}</span></div><small>${escapeHtml(getPlayer(v.playerId)?.team || 'FA')} · ${escapeHtml(selectionText)}</small></td><td>${escapeHtml(v.position)}</td><td><strong>${roundNum(v.value)}</strong></td><td>${v.ppg}</td><td>${v.last4}</td><td>${v.games}</td><td>${escapeHtml(v.valueModel || v.source || '')}</td><td>${escapeHtml(v.status || '')}</td></tr>`;
+  }).join('')}</tbody></table>`;
   el.querySelectorAll('tr[data-player-id]').forEach(row => {
-    row.addEventListener('click', () => setPlayerCompareInput($('playerTableClickTarget').value, row.dataset.playerId));
+    row.addEventListener('click', () => togglePlayerValueSelection(row.dataset.playerId));
   });
 }
 
@@ -3065,11 +3100,11 @@ function wireEvents() {
   $('playerValueSearch').addEventListener('input', renderPlayerValues);
   $('playerPositionFilter').addEventListener('change', renderPlayerValues);
   $('buildPlayerCompareBtn').addEventListener('click', renderPlayerComparison);
-  $('swapPlayerCompareBtn').addEventListener('click', () => { const a = $('playerCompareA').value; $('playerCompareA').value = $('playerCompareB').value; $('playerCompareB').value = a; renderPlayerComparison(); });
-  $('clearPlayerCompareBtn').addEventListener('click', () => { $('playerCompareA').value = ''; $('playerCompareB').value = ''; renderPlayerComparison(); });
+  $('swapPlayerCompareBtn').addEventListener('click', () => { const a = $('playerCompareA').value; $('playerCompareA').value = $('playerCompareB').value; $('playerCompareB').value = a; renderPlayerComparison(); renderPlayerValues(); });
+  $('clearPlayerCompareBtn').addEventListener('click', () => { $('playerCompareA').value = ''; $('playerCompareB').value = ''; renderPlayerComparison(); renderPlayerValues(); });
   ['playerCompareA', 'playerCompareB'].forEach(id => {
-    $(id).addEventListener('keydown', event => { if (event.key === 'Enter') renderPlayerComparison(); });
-    $(id).addEventListener('change', renderPlayerComparison);
+    $(id).addEventListener('keydown', event => { if (event.key === 'Enter') { renderPlayerComparison(); renderPlayerValues(); } });
+    $(id).addEventListener('change', () => { renderPlayerComparison(); renderPlayerValues(); });
   });
 
   ['ageWeight', 'recentWeight', 'needWeight', 'pickWeight'].forEach(id => {

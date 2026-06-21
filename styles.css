@@ -888,3 +888,36 @@ input[type="range"] { min-height: 28px; padding: 0; accent-color: var(--accent-s
   .compact-player-header .player-headshot { width: 58px; height: 58px; border-radius: 17px; }
   .compact-player-header .player-identity h3 { font-size: 1rem; }
 }
+
+.player-row-clickable.selected-a,
+.player-row-clickable.selected-b {
+  outline: 1px solid rgba(90, 167, 255, 0.46);
+  background: rgba(90, 167, 255, 0.10);
+}
+.player-row-clickable.selected-b {
+  outline-color: rgba(103, 227, 160, 0.42);
+  background: rgba(103, 227, 160, 0.08);
+}
+.player-table-name-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.selection-badge {
+  display: inline-flex;
+  width: 21px;
+  height: 21px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 900;
+  color: #eaf4ff;
+  background: rgba(90, 167, 255, 0.30);
+  border: 1px solid rgba(90, 167, 255, 0.48);
+}
+.selection-badge.second {
+  color: #eafff4;
+  background: rgba(103, 227, 160, 0.22);
+  border-color: rgba(103, 227, 160, 0.44);
+}
