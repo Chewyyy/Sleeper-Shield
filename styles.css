@@ -143,7 +143,6 @@ strong { color: var(--text); }
   margin-bottom: 14px;
   padding: 4px;
 }
-.brand p { margin: 0; color: var(--muted); font-size: 0.88rem; line-height: 1.25; }
 .brand-mark {
   width: 54px;
   height: 54px;
@@ -158,6 +157,25 @@ strong { color: var(--text); }
   font-weight: 850;
   letter-spacing: -0.05em;
   box-shadow: 0 14px 38px rgba(10,132,255,0.24);
+}
+.intro-copy {
+  margin: 0 0 16px;
+  padding: 6px 4px 2px;
+}
+.intro-copy h2 {
+  margin: 0;
+  max-width: 760px;
+  color: var(--text);
+  font-size: clamp(1.85rem, 5vw, 2.45rem);
+  line-height: 0.98;
+  letter-spacing: -0.065em;
+}
+.intro-copy p {
+  max-width: 780px;
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 0.98rem;
+  line-height: 1.42;
 }
 
 .panel, .compare-panel {
@@ -421,8 +439,12 @@ input[type="range"] { min-height: 28px; padding: 0; accent-color: var(--accent-s
 .trend-arrow { color: var(--good); font-weight: 850; }
 .trend-arrow.down { color: var(--bad); }
 .card-tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin: 16px 0; padding: 4px; border: 1px solid var(--line); border-radius: 999px; background: rgba(255,255,255,0.045); }
-.card-tabs span { padding: 8px 7px; border-radius: 999px; color: var(--muted-2); text-align: center; font-size: 0.74rem; font-weight: 760; }
-.card-tabs span.active { background: var(--accent-soft); color: #e8f3ff; }
+.card-tabs button { min-height: 34px; padding: 8px 7px; border: 0; border-radius: 999px; color: var(--muted-2); text-align: center; font-size: 0.74rem; font-weight: 760; background: transparent; box-shadow: none; }
+.card-tabs button.active { background: var(--accent-soft); color: #e8f3ff; }
+.card-tabs button:active { transform: scale(0.98); }
+.player-card-pane { display: none; }
+.player-card-pane.active { display: block; }
+.full-game-log { max-height: 420px; overflow: auto; padding-right: 2px; }
 .season-label { margin: 0 0 12px; color: var(--muted); font-size: 0.8rem; font-weight: 780; text-transform: uppercase; letter-spacing: 0.08em; }
 .stat-tile-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 10px; }
 .stat-tile-grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -492,7 +514,9 @@ input[type="range"] { min-height: 28px; padding: 0; accent-color: var(--accent-s
   }
   .brand-mark { width: 48px; height: 48px; border-radius: 16px; font-size: 0.78rem; }
   h1 { font-size: 1.08rem; }
-  .brand p { display: none; }
+  .intro-copy { margin-bottom: 12px; padding-right: 2px; }
+  .intro-copy h2 { font-size: 1.78rem; line-height: 1.02; }
+  .intro-copy p { margin-top: 10px; font-size: 0.96rem; line-height: 1.42; }
   h2 { font-size: 1.74rem; line-height: 1.02; }
   h3 { font-size: 1.05rem; }
   p { font-size: 0.93rem; }
@@ -593,7 +617,7 @@ input[type="range"] { min-height: 28px; padding: 0; accent-color: var(--accent-s
   .recent-strip { gap: 3px; font-size: 0.62rem; }
   .recent-dot { width: 7px; height: 7px; }
   .card-tabs { margin: 14px 0; }
-  .card-tabs span { padding: 8px 3px; font-size: 0.65rem; }
+  .card-tabs button { padding: 8px 3px; font-size: 0.65rem; }
   .stat-tile-grid, .stat-tile-grid.three { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .stat-tile { min-height: 72px; padding: 10px 8px; border-radius: 15px; }
   .stat-tile strong { font-size: 1.26rem; }

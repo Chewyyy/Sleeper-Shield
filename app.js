@@ -22,6 +22,7 @@ const PICK_BASE_VALUES = { 1: 60, 2: 30, 3: 14, 4: 7, 5: 3, 6: 1 };
 const FLEX_SLOTS = new Set(['FLEX', 'REC_FLEX', 'WRRB_FLEX', 'WRT', 'RB_WR_TE']);
 const SUPER_FLEX_SLOTS = new Set(['SUPER_FLEX', 'SUPERFLEX', 'OP']);
 const IDP_FLEX_SLOTS = new Set(['IDP_FLEX', 'DL_LB_DB']);
+const RECENT_GAME_COUNT = 5;
 
 const state = {
   nflState: null,
@@ -152,6 +153,39 @@ function safeNumber(n, fallback = 0) {
   return Number.isFinite(value) ? value : fallback;
 }
 
+function hasNonZeroPlayerPoint(pointsMap = {}) {
+  return Object.values(pointsMap || {}).some(value => Math.abs(safeNumber(value, 0)) > 0.005);
+}
+
+function matchupWeekHasScoredData(matchups = []) {
+  return (matchups || []).some(matchup => {
+    if (Math.abs(safeNumber(matchup?.points, 0)) > 0.005) return true;
+    const pointsMap = matchup?.players_points || matchup?.player_points || {};
+    return hasNonZeroPlayerPoint(pointsMap);
+  });
+}
+
+function shouldCountLeagueStatLine(points, didStart) {
+  return Math.abs(safeNumber(points, 0)) > 0.005 || Boolean(didStart);
+}
+
+function historicalStatLinePlayed(stats = {}, points = 0) {
+  if (Math.abs(safeNumber(points, 0)) > 0.005) return true;
+  const ignored = new Set([
+    'week', 'game_week', 'display_week', 'season', 'season_type', 'game_id', 'player_id',
+    'team', 'team_abbr', 'opponent', 'opp', 'company', 'sport', 'category', 'date'
+  ]);
+  return Object.entries(stats || {}).some(([key, value]) => {
+    if (ignored.has(String(key))) return false;
+    const num = Number(value);
+    return Number.isFinite(num) && Math.abs(num) > 0.005;
+  });
+}
+
+function recordHasGames(rec) {
+  return Boolean(rec && safeNumber(rec.games, 0) > 0);
+}
+
 function totalFpts(settings = {}) {
   return safeNumber(settings.fpts) + safeNumber(settings.fpts_decimal) / 100;
 }
@@ -189,6 +223,22 @@ function idpSlotCount(league) {
     const s = String(slot).toUpperCase();
     return ['DL', 'LB', 'DB', 'IDP'].includes(s) || IDP_FLEX_SLOTS.has(s);
   }).length;
+}
+
+function activeLeaguePositions(league) {
+  const active = new Set();
+  const starterSlots = (league?.roster_positions || [])
+    .map(slot => String(slot).toUpperCase())
+    .filter(slot => !['BN', 'BE', 'IR', 'TAXI'].includes(slot));
+
+  for (const slot of starterSlots) {
+    if (POSITION_ORDER.includes(slot)) active.add(slot);
+    if (FLEX_SLOTS.has(slot)) ['RB', 'WR', 'TE'].forEach(pos => active.add(pos));
+    if (SUPER_FLEX_SLOTS.has(slot)) ['QB', 'RB', 'WR', 'TE'].forEach(pos => active.add(pos));
+    if (IDP_FLEX_SLOTS.has(slot) || slot === 'IDP') ['DL', 'LB', 'DB'].forEach(pos => active.add(pos));
+  }
+
+  return active;
 }
 
 async function idbOpen() {
@@ -259,7 +309,8 @@ function preparePlayerSearch() {
     option.value = p.label;
     datalist.appendChild(option);
   });
-  $('metricPlayers').textContent = Object.keys(state.players || {}).length.toLocaleString();
+  const metricPlayersEl = $('metricPlayers');
+  if (metricPlayersEl) metricPlayersEl.textContent = Object.keys(state.players || {}).length.toLocaleString();
 }
 
 function findPlayerFromInput(input) {
@@ -308,7 +359,7 @@ async function loadLeague(leagueId) {
         fetchJson(`${API_BASE}/league/${leagueId}/matchups/${week}`, `matchups week ${week}`).catch(() => []),
         fetchJson(`${API_BASE}/league/${leagueId}/transactions/${week}`, `transactions week ${week}`).catch(() => [])
       ]);
-      if (Array.isArray(matchups) && matchups.length) matchupsByWeek[week] = matchups;
+      if (Array.isArray(matchups) && matchups.length && matchupWeekHasScoredData(matchups)) matchupsByWeek[week] = matchups;
       if (Array.isArray(transactions) && transactions.length) transactionsByWeek[week] = transactions;
       await delay(80);
     } catch (err) {
@@ -362,15 +413,17 @@ function buildPlayerStats(league) {
       const starters = new Set(matchup.starters || []);
       const pointsMap = matchup.players_points || matchup.player_points || {};
       for (const pid of players) {
-        if (!map.has(String(pid))) {
-          map.set(String(pid), {
-            playerId: String(pid), total: 0, games: 0, starts: 0, starterTotal: 0, benchTotal: 0,
+        const pidText = String(pid);
+        const pts = safeNumber(pointsMap?.[pid] ?? pointsMap?.[pidText], 0);
+        const didStart = starters.has(pid) || starters.has(pidText);
+        if (!shouldCountLeagueStatLine(pts, didStart)) continue;
+        if (!map.has(pidText)) {
+          map.set(pidText, {
+            playerId: pidText, total: 0, games: 0, starts: 0, starterTotal: 0, benchTotal: 0,
             weeks: [], high: 0, rosterIds: new Set(), last4: []
           });
         }
-        const rec = map.get(String(pid));
-        const pts = safeNumber(pointsMap?.[pid], 0);
-        const didStart = starters.has(pid);
+        const rec = map.get(pidText);
         rec.total += pts;
         rec.games += 1;
         rec.high = Math.max(rec.high, pts);
@@ -390,7 +443,7 @@ function buildPlayerStats(league) {
     rec.ppg = rec.games ? rec.total / rec.games : 0;
     rec.startRate = rec.games ? rec.starts / rec.games : 0;
     rec.weeks.sort((a, b) => a.week - b.week);
-    rec.last4 = rec.weeks.slice(-4);
+    rec.last4 = rec.weeks.slice(-RECENT_GAME_COUNT);
     rec.last4Avg = rec.last4.length ? rec.last4.reduce((sum, w) => sum + w.points, 0) / rec.last4.length : rec.ppg;
   }
   league.playerStats = map;
@@ -398,12 +451,18 @@ function buildPlayerStats(league) {
 
 function historicalSeasonsToLoad(league) {
   const base = currentSeasonNumber(league);
-  return [base, base - 1, base - 2].filter(season => season >= 2018);
+  const nflSeason = Number(state.nflState?.season || 0);
+  const currentWeek = safeNumber(state.nflState?.week || state.nflState?.display_week, 1);
+  const hasPlayedLeagueWeeks = Object.keys(league?.matchupsByWeek || {}).length > 0;
+  const isCurrentNflSeason = nflSeason && Number(base) === nflSeason;
+  const includeCurrent = !isCurrentNflSeason || hasPlayedLeagueWeeks || league?.status === 'complete' || currentWeek > 1;
+  const start = includeCurrent ? base : base - 1;
+  return [start, start - 1, start - 2].filter(season => season >= 2018);
 }
 
 function leagueHistoryCacheKey(league, seasons) {
   const scoringHash = JSON.stringify(league.scoring_settings || {}).split('').reduce((hash, ch) => ((hash << 5) - hash + ch.charCodeAt(0)) | 0, 0);
-  return `history.${league.league_id}.${seasons.join('-')}.${scoringHash}.v5`;
+  return `history.${league.league_id}.${seasons.join('-')}.${scoringHash}.v6`;
 }
 
 function rosteredPlayerIds(league) {
@@ -480,7 +539,7 @@ function normalizeHistoricalPayload(playerId, season, payload, league) {
       started: false,
       rosterId: null
     };
-  }).filter(row => row.week && Number.isFinite(row.points));
+  }).filter(row => row.week && Number.isFinite(row.points) && historicalStatLinePlayed(row.stats, row.points));
 }
 
 function fantasyPointsFromStats(stats = {}, scoring = {}) {
@@ -563,7 +622,7 @@ function finalizeStatRecord(rec) {
   rec.ppg = rec.games ? rec.total / rec.games : 0;
   rec.startRate = rec.games ? rec.starts / rec.games : 0;
   rec.weeks.sort((a, b) => Number(a.season || 0) - Number(b.season || 0) || a.week - b.week);
-  rec.last4 = rec.weeks.slice(-4);
+  rec.last4 = rec.weeks.slice(-RECENT_GAME_COUNT);
   rec.last4Avg = rec.last4.length ? rec.last4.reduce((sum, w) => sum + w.points, 0) / rec.last4.length : rec.ppg;
   return rec;
 }
@@ -578,10 +637,10 @@ function combineHistoricalRecords(playerId, records) {
 
 function productionRecord(league, playerId) {
   const current = league.playerStats?.get(String(playerId));
-  if (current?.games >= 2) return current;
+  if (recordHasGames(current) && current.games >= 2) return current;
   const historical = league.historicalStats?.get(String(playerId))?.summary;
-  if (historical?.games) return historical;
-  return current || null;
+  if (recordHasGames(historical)) return historical;
+  return recordHasGames(current) ? current : null;
 }
 
 function displayRecordForPlayer(league, playerId) {
@@ -801,9 +860,14 @@ function rosterNeedProfile(league, rosterId, overridePlayers = null) {
     if (IDP_FLEX_SLOTS.has(s)) { needCounts.DL += 0.34; needCounts.LB += 0.33; needCounts.DB += 0.33; }
   }
 
+  const activePositions = activeLeaguePositions(league);
   const profile = {};
   for (const pos of POSITION_ORDER) {
-    const required = Math.max(1, Math.ceil(needCounts[pos] || 0));
+    const required = activePositions.has(pos) ? Math.ceil(needCounts[pos] || 0) : 0;
+    if (!required) {
+      profile[pos] = { required: 0, value: 0, count: 0 };
+      continue;
+    }
     const values = playerIds
       .filter(pid => playerFantasyPositions(pid).includes(pos))
       .map(pid => playerValue(league, pid).value)
@@ -912,7 +976,7 @@ function renderAssetBreakdown(league, assets, title) {
   const rows = assets.map(asset => {
     const v = assetValue(league, asset);
     const label = asset.type === 'player' ? `${v.name} (${v.position})` : v.label;
-    const detail = asset.type === 'player' ? `${v.ppg} PPG, last 4 ${v.last4}, ${v.percentile}th percentile` : v.detail;
+    const detail = asset.type === 'player' ? `${v.ppg} PPG, last 5 ${v.last4}, ${v.percentile}th percentile` : v.detail;
     return `<li><strong>${escapeHtml(label)}</strong> — ${roundNum(v.value)} <small>${escapeHtml(detail || '')}</small></li>`;
   }).join('') || '<li>None</li>';
   return `<p><strong>${escapeHtml(title)}</strong></p><ul>${rows}</ul>`;
@@ -1054,6 +1118,40 @@ function playerCardData(league, playerId) {
   };
 }
 
+function displayGamesLabel(rec) {
+  return rec?.source === 'league' ? 'Weeks' : 'Games';
+}
+
+function displaySampleNote(data, games) {
+  if (data.rec?.source === 'league') {
+    const startRate = roundNum((data.rec.startRate || 0) * 100, 0);
+    return `<div class="player-note"><span>League usage</span><strong>${data.rec.starts || 0}/${games} starts · ${startRate}%</strong></div>`;
+  }
+  const seasonText = data.rec?.season === 'multi' ? 'past seasons' : (data.rec?.season ? `${data.rec.season}` : 'available history');
+  return `<div class="player-note"><span>Stat sample</span><strong>${games} ${displayGamesLabel(data.rec).toLowerCase()} · ${seasonText}</strong></div>`;
+}
+
+function recentSeasonRecordsForPlayer(league, playerId, limit = 2) {
+  const pid = String(playerId);
+  const records = [];
+  const current = league.playerStats?.get(pid);
+  if (recordHasGames(current)) records.push(current);
+  const historical = league.historicalStats?.get(pid)?.seasons || {};
+  Object.values(historical).forEach(rec => {
+    if (recordHasGames(rec)) records.push(rec);
+  });
+  const seen = new Set();
+  return records
+    .filter(rec => {
+      const key = `${rec.source || 'x'}-${rec.season || 'league'}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort((a, b) => Number(b.season || currentSeasonNumber(league)) - Number(a.season || currentSeasonNumber(league)))
+    .slice(0, limit);
+}
+
 function trendForPlayer(data) {
   const ppg = safeNumber(data.rec.ppg);
   const last4 = safeNumber(data.rec.last4Avg);
@@ -1064,11 +1162,11 @@ function trendForPlayer(data) {
 }
 
 function renderTrendDots(data) {
-  const weeks = (data.rec.last4 || []).slice(-4);
-  const dots = [0, 1, 2, 3].map(i => `<span class="recent-dot" style="opacity:${weeks[i] ? 0.95 : 0.25}"></span>`).join('');
+  const weeks = (data.rec.last4 || []).slice(-RECENT_GAME_COUNT);
+  const dots = Array.from({ length: RECENT_GAME_COUNT }, (_, i) => i).map(i => `<span class="recent-dot" style="opacity:${weeks[i] ? 0.95 : 0.25}"></span>`).join('');
   const trend = trendForPlayer(data);
   const arrow = trend.direction === 'down' ? '↓' : trend.direction === 'up' ? '↑' : '→';
-  return `<div class="recent-strip"><span>L4</span>${dots}<span class="trend-arrow ${trend.direction === 'down' ? 'down' : ''}">${arrow}</span></div>`;
+  return `<div class="recent-strip"><span>L5</span>${dots}<span class="trend-arrow ${trend.direction === 'down' ? 'down' : ''}">${arrow}</span></div>`;
 }
 
 function renderPlayerStatCard(league, playerId) {
@@ -1079,50 +1177,61 @@ function renderPlayerStatCard(league, playerId) {
   const ppg = roundNum(data.rec.ppg || data.value.ppg || 0, 1);
   const total = roundNum(data.rec.total || 0, 1);
   const games = safeNumber(data.rec.games || data.value.games || 0);
+  const gamesLabel = displayGamesLabel(data.rec);
   const last4 = roundNum(data.rec.last4Avg || data.value.last4 || 0, 1);
   const startRate = roundNum((data.rec.startRate || 0) * 100, 0);
   const rankText = `#${data.rank.rank} ${data.rank.position}`;
   const sourceLabel = data.rec.source === 'historical' ? `${data.rec.season === 'multi' ? 'Past 2 seasons' : data.rec.season}` : `${league.season || ''} league`;
   const matchupLabel = `${data.value.percentile}th pct · ${trend.text}`;
   return `
-    <article class="player-card">
+    <article class="player-card" data-player-card data-player-id="${escapeHtml(data.playerId)}" data-league-id="${escapeHtml(league.league_id)}">
       <div class="player-card-header">
         <img class="player-headshot" src="${playerHeadshotUrl(data.playerId)}" alt="${escapeHtml(data.name)} headshot" onerror="this.onerror=null;this.src='${fallback}';" />
         <div class="player-identity">
           <h3>${escapeHtml(data.name)} <span class="status-dot ${tone === 'good' ? '' : tone}"></span></h3>
-          <div class="player-meta-row"><span class="position-pill">${escapeHtml(data.position)}</span><span>${escapeHtml(data.team)} · ${data.age ? `${escapeHtml(data.age)} yrs` : 'age n/a'} · ${games}G</span></div>
+          <div class="player-meta-row"><span class="position-pill">${escapeHtml(data.position)}</span><span>${escapeHtml(data.team)} · ${data.age ? `${escapeHtml(data.age)} yrs` : 'age n/a'} · ${games} ${gamesLabel}</span></div>
           <div class="matchup-pill">${escapeHtml(matchupLabel)}</div>
         </div>
         <div class="player-score">
           <strong>${roundNum(data.value.value, 1)}</strong>
           <span>VALUE</span>
-          <small>${last4} L4 avg · ${rankText}</small>
+          <small>${last4} L5 avg · ${rankText}</small>
           ${renderTrendDots(data)}
         </div>
       </div>
 
-      <div class="card-tabs" aria-hidden="true"><span class="active">Overview</span><span>Game Log</span><span>Trade</span></div>
-      <p class="season-label">${escapeHtml(sourceLabel)} Production</p>
-
-      <div class="stat-tile-grid">
-        <div class="stat-tile"><strong class="blue">${ppg}</strong><span>PPG</span></div>
-        <div class="stat-tile"><strong>${games}</strong><span>Games</span></div>
-        <div class="stat-tile"><strong>${total}</strong><span>Total Pts</span></div>
-        <div class="stat-tile"><strong class="green">${roundNum(data.value.value, 1)}</strong><span>Trade Value</span></div>
+      <div class="card-tabs" role="tablist" aria-label="Player card views">
+        <button type="button" class="active" data-player-card-tab="overview">Overview</button>
+        <button type="button" data-player-card-tab="gamelog">Game Log</button>
+        <button type="button" data-player-card-action="trade">Trade</button>
       </div>
 
-      <div class="player-note"><span>Rostered impact</span><strong>${data.rec.starts || 0}/${games} starts · ${startRate}%</strong></div>
+      <div class="player-card-pane active" data-player-card-pane="overview">
+        <p class="season-label">${escapeHtml(sourceLabel)} Production</p>
 
-      <div class="stat-tile-grid three">
-        <div class="stat-tile"><strong>${roundNum(data.rec.high || 0, 1)}</strong><span>High</span></div>
-        <div class="stat-tile"><strong>${last4}</strong><span>Last 4</span></div>
-        <div class="stat-tile"><strong>${data.value.percentile}</strong><span>Pos Pct</span></div>
-        <div class="stat-tile"><strong>${data.rank.rank}/${data.rank.total}</strong><span>Value Rank</span></div>
-        <div class="stat-tile"><strong>${escapeHtml(data.status || 'Active')}</strong><span>Status</span></div>
-        <div class="stat-tile"><strong>${roundNum(positionMultiplier(data.player, league), 2)}x</strong><span>Format Adj</span></div>
+        <div class="stat-tile-grid">
+          <div class="stat-tile"><strong class="blue">${ppg}</strong><span>PPG</span></div>
+          <div class="stat-tile"><strong>${games}</strong><span>${gamesLabel}</span></div>
+          <div class="stat-tile"><strong>${total}</strong><span>Total Pts</span></div>
+          <div class="stat-tile"><strong class="green">${roundNum(data.value.value, 1)}</strong><span>Trade Value</span></div>
+        </div>
+
+        ${displaySampleNote(data, games)}
+
+        <div class="stat-tile-grid three">
+          <div class="stat-tile"><strong>${roundNum(data.rec.high || 0, 1)}</strong><span>High</span></div>
+          <div class="stat-tile"><strong>${last4}</strong><span>Last 5</span></div>
+          <div class="stat-tile"><strong>${data.value.percentile}</strong><span>Pos Pct</span></div>
+          <div class="stat-tile"><strong>${data.rank.rank}/${data.rank.total}</strong><span>Value Rank</span></div>
+          <div class="stat-tile"><strong>${escapeHtml(data.status || 'Active')}</strong><span>Status</span></div>
+          <div class="stat-tile"><strong>${roundNum(positionMultiplier(data.player, league), 2)}x</strong><span>Format Adj</span></div>
+        </div>
       </div>
 
-      ${renderMiniGameLog(league, data)}
+      <div class="player-card-pane" data-player-card-pane="gamelog">
+        <p class="season-label">Game Log</p>
+        ${renderPlayerCardGameLog(league, data)}
+      </div>
     </article>`;
 }
 
@@ -1152,10 +1261,9 @@ function renderTradePlayerCard(league, playerId) {
   const player = getPlayer(playerId) || {};
   const name = value.name || playerName(playerId);
   const position = value.position || playerPrimaryPosition(playerId);
-  const currentSeason = currentSeasonNumber(league);
-  const previousSeason = currentSeason - 1;
-  const current = tradeRecordForSeason(league, playerId, currentSeason);
-  const previous = tradeRecordForSeason(league, playerId, previousSeason);
+  const records = recentSeasonRecordsForPlayer(league, playerId, 2);
+  const current = records[0] || blankStatRecord(playerId, currentSeasonNumber(league));
+  const previous = records[1] || blankStatRecord(playerId, currentSeasonNumber(league) - 1);
   const fallback = playerFallbackAvatar(name, position);
   const tone = statusTone(value.status || player.injury_status || player.status);
   return `
@@ -1173,16 +1281,16 @@ function renderTradePlayerCard(league, playerId) {
       </div>
 
       <div class="trade-season-grid">
-        ${renderSeasonSnapshot(`${currentSeason}`, current)}
-        ${renderSeasonSnapshot(`${previousSeason}`, previous)}
+        ${renderSeasonSnapshot(`${current.season || league.season || currentSeasonNumber(league)}`, current)}
+        ${renderSeasonSnapshot(`${previous.season || currentSeasonNumber(league) - 1}`, previous)}
       </div>
 
       <details class="season-details">
-        <summary>View ${currentSeason} game log</summary>
+        <summary>View ${current.season || league.season || currentSeasonNumber(league)} game log</summary>
         ${renderRecordMiniLog(league, current)}
       </details>
       <details class="season-details">
-        <summary>View ${previousSeason} game log</summary>
+        <summary>View ${previous.season || currentSeasonNumber(league) - 1} game log</summary>
         ${renderRecordMiniLog(league, previous)}
       </details>
     </article>`;
@@ -1200,17 +1308,17 @@ function renderSeasonSnapshot(label, rec) {
       <div class="season-snapshot-title"><span>${escapeHtml(label)}</span><small>${escapeHtml(source)}</small></div>
       <div class="season-stat-row"><span>PPG</span><strong>${ppg}</strong></div>
       <div class="season-stat-row"><span>Total</span><strong>${total}</strong></div>
-      <div class="season-stat-row"><span>Games</span><strong>${games}</strong></div>
-      <div class="season-stat-row"><span>Last 4 / High</span><strong>${last4} / ${high}</strong></div>
+      <div class="season-stat-row"><span>${displayGamesLabel(rec)}</span><strong>${games}</strong></div>
+      <div class="season-stat-row"><span>Last 5 / High</span><strong>${last4} / ${high}</strong></div>
     </div>`;
 }
 
 function renderRecordMiniLog(league, rec) {
-  const rows = (rec?.weeks || []).slice(-8).reverse();
+  const rows = (rec?.weeks || []).slice(-RECENT_GAME_COUNT).reverse();
   if (!rows.length) return '<div class="mini-log"><p class="empty">No game-log rows found for this season.</p></div>';
   return `<div class="mini-log">${rows.map(row => {
     const weekLabel = row.season ? `${row.season} W${row.week}` : `Week ${row.week}`;
-    const context = row.rosterId ? `${teamName(league, row.rosterId)}${row.started ? ' · started' : ' · bench'}` : 'NFL stat line';
+    const context = row.rosterId ? `${teamName(league, row.rosterId)}${row.started ? ' · started' : ' · bench'}` : 'NFL game stat line';
     return `<div class="mini-log-row"><strong>${escapeHtml(weekLabel)}</strong><span>${escapeHtml(context)}</span><strong>${roundNum(row.points, 1)}</strong></div>`;
   }).join('')}</div>`;
 }
@@ -1227,7 +1335,7 @@ function renderTradeModelExplanation(league) {
       <h3>What the trade model used</h3>
       <p>The player values are built from the league's scoring settings, current-season Sleeper matchup production, historical stat rows when available, positional scarcity, roster format, age/status adjustments, and recent form.</p>
       <ul>
-        <li><strong>Current year:</strong> league matchup data for ${escapeHtml(league.season || currentSeasonNumber(league))}, including PPG, total points, start rate, last-four-week trend, and positional percentile.</li>
+        <li><strong>Current year:</strong> league matchup data for ${escapeHtml(league.season || currentSeasonNumber(league))}, including PPG, total points, start rate, last-five-game trend, and positional percentile.</li>
         <li><strong>Previous years:</strong> best-effort historical stat fetches scored under this league's scoring rules. Loaded seasons: ${escapeHtml(seasons)}.</li>
         <li><strong>League format:</strong> ${escapeHtml(formatText)}.</li>
         <li><strong>Draft picks:</strong> round value, years until the pick conveys, and the original owner's projected roster strength to estimate early/mid/late pick value.</li>
@@ -1237,11 +1345,22 @@ function renderTradeModelExplanation(league) {
 }
 
 function renderMiniGameLog(league, data) {
-  const rows = (data.rec.weeks || []).slice(-6).reverse();
+  const rows = (data.rec.weeks || []).slice(-RECENT_GAME_COUNT).reverse();
   if (!rows.length) return '<div class="mini-log"><p class="empty">No game-log rows found for this view.</p></div>';
   return `<div class="mini-log">${rows.map(row => {
     const weekLabel = row.season ? `${row.season} W${row.week}` : `Week ${row.week}`;
-    const context = row.rosterId ? `${teamName(league, row.rosterId)}${row.started ? ' · started' : ' · bench'}` : 'NFL stat line';
+    const context = row.rosterId ? `${teamName(league, row.rosterId)}${row.started ? ' · started' : ' · bench'}` : 'NFL game stat line';
+    return `<div class="mini-log-row"><strong>${escapeHtml(weekLabel)}</strong><span>${escapeHtml(context)}</span><strong>${roundNum(row.points, 1)}</strong></div>`;
+  }).join('')}</div>`;
+}
+
+
+function renderPlayerCardGameLog(league, data) {
+  const rows = (data?.rec?.weeks || []).slice(-RECENT_GAME_COUNT).reverse();
+  if (!rows.length) return '<div class="mini-log"><p class="empty">No game-log rows found for this player.</p></div>';
+  return `<div class="mini-log full-game-log">${rows.map(row => {
+    const weekLabel = row.season ? `${row.season} W${row.week}` : `Week ${row.week}`;
+    const context = row.rosterId ? `${teamName(league, row.rosterId)}${row.started ? ' · started' : ' · bench'}` : 'NFL game stat line';
     return `<div class="mini-log-row"><strong>${escapeHtml(weekLabel)}</strong><span>${escapeHtml(context)}</span><strong>${roundNum(row.points, 1)}</strong></div>`;
   }).join('')}</div>`;
 }
@@ -1283,7 +1402,7 @@ function renderComparisonPanel(league, playerAId, playerBId) {
       <div class="compare-bars">
         ${compareMetric('Trade value', a.value.value, b.value.value)}
         ${compareMetric('PPG', a.rec.ppg, b.rec.ppg)}
-        ${compareMetric('Last 4 avg', a.rec.last4Avg, b.rec.last4Avg)}
+        ${compareMetric('Last 5 avg', a.rec.last4Avg, b.rec.last4Avg)}
         ${compareMetric('Total pts', a.rec.total, b.rec.total)}
         ${compareMetric('Ceiling', a.rec.high, b.rec.high)}
         ${compareMetric('Start rate', (a.rec.startRate || 0) * 100, (b.rec.startRate || 0) * 100, v => `${roundNum(v, 0)}%`)}
@@ -1424,7 +1543,7 @@ function renderPlayerValues() {
     .filter(v => !query || `${v.name} ${v.position} ${getPlayer(v.playerId)?.team || ''}`.toLowerCase().includes(query))
     .sort((a, b) => b.value - a.value)
     .slice(0, 250);
-  el.innerHTML = `<table><thead><tr><th>Player</th><th>Pos</th><th>Value</th><th>PPG</th><th>Last 4</th><th>Games</th><th>Source</th><th>Status</th></tr></thead><tbody>${rows.map(v => `
+  el.innerHTML = `<table><thead><tr><th>Player</th><th>Pos</th><th>Value</th><th>PPG</th><th>Last 5</th><th>Games</th><th>Source</th><th>Status</th></tr></thead><tbody>${rows.map(v => `
     <tr class="player-row-clickable" data-player-id="${escapeHtml(v.playerId)}"><td>${escapeHtml(v.name)}<small>${escapeHtml(getPlayer(v.playerId)?.team || 'FA')} · click to load card</small></td><td>${escapeHtml(v.position)}</td><td><strong>${roundNum(v.value)}</strong></td><td>${v.ppg}</td><td>${v.last4}</td><td>${v.games}</td><td>${escapeHtml(v.source || '')}</td><td>${escapeHtml(v.status || '')}</td></tr>`).join('')}</tbody></table>`;
   el.querySelectorAll('tr[data-player-id]').forEach(row => {
     row.addEventListener('click', () => setPlayerCompareInput($('playerTableClickTarget').value, row.dataset.playerId));
@@ -1609,6 +1728,81 @@ function selectLeagueAcrossApp(leagueId) {
   renderEverything();
 }
 
+
+function activateTab(tabId) {
+  document.querySelectorAll('.tab').forEach(tab => tab.classList.toggle('active', tab.dataset.tab === tabId));
+  document.querySelectorAll('.tab-panel').forEach(panel => panel.classList.toggle('active', panel.id === tabId));
+}
+
+function ownerRosterForPlayer(league, playerId) {
+  const pid = String(playerId);
+  return (league?.rosters || []).find(roster => (roster.players || []).map(String).includes(pid)) || null;
+}
+
+function sendPlayerToTrade(playerId, leagueId) {
+  const league = state.leagues.find(l => String(l.league_id) === String(leagueId)) || getSelectedLeague('playerLeagueSelect') || getSelectedLeague('tradeLeagueSelect');
+  if (!league) {
+    alert('Load a league before adding a player to a trade.');
+    return;
+  }
+
+  const currentTradeLeague = $('tradeLeagueSelect')?.value;
+  if (currentTradeLeague && String(currentTradeLeague) !== String(league.league_id)) {
+    state.selectedAssets = { A: [], B: [] };
+  }
+  selectLeagueAcrossApp(league.league_id);
+
+  const roster = ownerRosterForPlayer(league, playerId);
+  if (roster && $('teamASelect')) {
+    $('teamASelect').value = String(roster.roster_id);
+    if ($('teamBSelect')?.value === String(roster.roster_id) && $('teamBSelect').options.length > 1) {
+      $('teamBSelect').selectedIndex = [...$('teamBSelect').options].findIndex(option => option.value !== String(roster.roster_id));
+    }
+    fillTeamPlayerSelects();
+  }
+
+  const asset = { type: 'player', playerId: String(playerId) };
+  const key = assetKey(asset);
+  if (!state.selectedAssets.A.some(existing => assetKey(existing) === key)) {
+    state.selectedAssets.A.push(asset);
+  }
+  if ($('teamAPlayerSelect') && [...$('teamAPlayerSelect').options].some(option => option.value === `player:${playerId}`)) {
+    $('teamAPlayerSelect').value = `player:${playerId}`;
+  }
+  if ($('teamAPlayerSearch')) $('teamAPlayerSearch').value = '';
+  renderAssetList('A');
+  renderAssetList('B');
+
+  const result = $('tradeResult');
+  if (result) {
+    result.className = 'trade-result empty';
+    result.textContent = `${playerName(playerId)} was added to Team A. Select the other side of the deal, then evaluate.`;
+  }
+  activateTab('trade');
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function wirePlayerCardActions() {
+  document.addEventListener('click', event => {
+    const tabButton = event.target.closest('[data-player-card-tab]');
+    if (tabButton) {
+      const card = tabButton.closest('[data-player-card]');
+      if (!card) return;
+      const targetPane = tabButton.dataset.playerCardTab;
+      card.querySelectorAll('[data-player-card-tab]').forEach(button => button.classList.toggle('active', button === tabButton));
+      card.querySelectorAll('[data-player-card-pane]').forEach(pane => pane.classList.toggle('active', pane.dataset.playerCardPane === targetPane));
+      return;
+    }
+
+    const tradeButton = event.target.closest('[data-player-card-action="trade"]');
+    if (tradeButton) {
+      const card = tradeButton.closest('[data-player-card]');
+      if (!card) return;
+      sendPlayerToTrade(card.dataset.playerId, card.dataset.leagueId);
+    }
+  });
+}
+
 function fillPickSelects() {
   fillTeamPlayerSelects();
 }
@@ -1626,10 +1820,14 @@ function getSelectedLeague(selectId) {
 }
 
 function renderMetrics() {
-  $('metricLeagues').textContent = state.leagues.length;
-  $('metricTeams').textContent = state.leagues.reduce((sum, l) => sum + (l.rosters?.length || 0), 0);
-  $('metricWeeks').textContent = state.leagues.reduce((sum, l) => sum + Object.keys(l.matchupsByWeek || {}).length, 0);
-  $('metricPlayers').textContent = Object.keys(state.players || {}).length.toLocaleString();
+  const setText = (id, value) => {
+    const el = $(id);
+    if (el) el.textContent = value;
+  };
+  setText('metricLeagues', state.leagues.length);
+  setText('metricTeams', state.leagues.reduce((sum, l) => sum + (l.rosters?.length || 0), 0));
+  setText('metricWeeks', state.leagues.reduce((sum, l) => sum + Object.keys(l.matchupsByWeek || {}).length, 0));
+  setText('metricPlayers', Object.keys(state.players || {}).length.toLocaleString());
 }
 
 function generateRecap() {
@@ -2235,13 +2433,10 @@ function wireEvents() {
   });
 
   document.querySelectorAll('.tab').forEach(tab => {
-    tab.addEventListener('click', () => {
-      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-      document.querySelectorAll('.tab-panel').forEach(panel => panel.classList.remove('active'));
-      tab.classList.add('active');
-      $(tab.dataset.tab).classList.add('active');
-    });
+    tab.addEventListener('click', () => activateTab(tab.dataset.tab));
   });
+
+  wirePlayerCardActions();
 
   ['dashboardLeagueSelect', 'tradeLeagueSelect', 'recapLeagueSelect', 'playerLeagueSelect', 'rulesLeagueSelect'].forEach(id => {
     const el = $(id);

@@ -20,26 +20,14 @@
         <div class="brand-mark">STS</div>
         <div>
           <h1>Trade Shield</h1>
-          <p>Fair trades, clean player cards, and quick league recaps.</p>
         </div>
       </div>
 
-      <section class="panel compact">
-        <label for="leagueIdInput">Add league ID</label>
-        <div class="league-add-row">
-          <input id="leagueIdInput" inputmode="numeric" placeholder="Sleeper league ID" />
-          <button id="addLeagueIdBtn" class="primary">Add</button>
-        </div>
-        <div class="button-row single-action">
-          <button id="clearBtn" class="ghost">Clear saved leagues</button>
-        </div>
-        <p class="hint">Saved leagues load automatically on this device. Public Sleeper data only. No login required.</p>
+      <section class="intro-copy" aria-label="App introduction">
+        <h2>Check a trade before you accept it.</h2>
+        <p>Load your leagues, compare players and picks, and generate clean recap packets you can paste into ChatGPT.</p>
       </section>
 
-      <section class="panel compact">
-        <div class="section-title">Leagues</div>
-        <div id="loadedLeagues" class="league-list empty">No leagues loaded.</div>
-      </section>
     </aside>
 
     <main class="main">
@@ -55,17 +43,23 @@
       </header>
 
       <section id="dashboard" class="tab-panel active">
-        <div class="hero panel">
-          <div>
-            <h2>Check a trade before you accept it.</h2>
-            <p>Load your leagues, compare players and picks, and generate clean recap packets you can paste into ChatGPT.</p>
-          </div>
-          <div class="hero-grid">
-            <div class="metric"><span id="metricLeagues">0</span><small>Leagues</small></div>
-            <div class="metric"><span id="metricTeams">0</span><small>Teams</small></div>
-            <div class="metric"><span id="metricPlayers">0</span><small>Players cached</small></div>
-            <div class="metric"><span id="metricWeeks">0</span><small>Weeks loaded</small></div>
-          </div>
+        <div class="grid two home-league-grid">
+          <section class="panel compact">
+            <label for="leagueIdInput">Add league ID</label>
+            <div class="league-add-row">
+              <input id="leagueIdInput" inputmode="numeric" placeholder="Sleeper league ID" />
+              <button id="addLeagueIdBtn" class="primary">Add</button>
+            </div>
+            <div class="button-row single-action">
+              <button id="clearBtn" class="ghost">Clear saved leagues</button>
+            </div>
+            <p class="hint">Saved leagues load automatically on this device. Public Sleeper data only. No login required.</p>
+          </section>
+
+          <section class="panel compact">
+            <div class="section-title">Leagues</div>
+            <div id="loadedLeagues" class="league-list empty">No leagues loaded.</div>
+          </section>
         </div>
 
         <div class="grid two">
