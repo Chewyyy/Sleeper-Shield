@@ -1,0 +1,14 @@
+{
+  "name": "Sleeper Trade Shield",
+  "short_name": "Trade Shield",
+  "description": "Mobile fantasy football trade analyzer and Sleeper recap builder.",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#050607",
+  "theme_color": "#050607",
+  "orientation": "portrait-primary",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
