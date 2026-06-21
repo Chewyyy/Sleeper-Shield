@@ -58,12 +58,11 @@ function loadSavedLeagueIds() {
 function saveLeagueIds(ids) {
   state.savedLeagueIds = [...new Set((ids || []).map(String).filter(Boolean))];
   localStorage.setItem(STORAGE_KEYS.leagues, state.savedLeagueIds.join('\n'));
-  if ($('leagueIds')) $('leagueIds').value = state.savedLeagueIds.join('\n');
 }
 
-function addSavedLeagueId() {
+async function addSavedLeagueId() {
   const input = $('leagueIdInput');
-  const ids = parseLeagueIds(`${input.value}\n${$('leagueIds').value}\n${state.savedLeagueIds.join('\n')}`);
+  const ids = parseLeagueIds(`${input.value}\n${state.savedLeagueIds.join('\n')}`);
   if (!ids.length) {
     alert('Enter a valid Sleeper league ID.');
     return;
@@ -71,17 +70,22 @@ function addSavedLeagueId() {
   saveLeagueIds(ids);
   input.value = '';
   logStatus(`Saved ${ids.length} league ID${ids.length === 1 ? '' : 's'} in this browser.`);
+  await loadAll(ids);
 }
 
 function logStatus(message) {
+  console.log(`[Trade Shield] ${message}`);
   const el = $('statusLog');
+  if (!el) return;
   const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   el.textContent = `${time} — ${message}\n${el.textContent}`.trim();
 }
 
 function setBusy(isBusy) {
-  $('loadLeaguesBtn').disabled = isBusy;
-  $('clearBtn').disabled = isBusy;
+  const loadBtn = $('loadLeaguesBtn');
+  if (loadBtn) loadBtn.disabled = isBusy;
+  if ($('addLeagueIdBtn')) $('addLeagueIdBtn').disabled = isBusy;
+  if ($('clearBtn')) $('clearBtn').disabled = isBusy;
 }
 
 async function fetchJson(url, label = url) {
@@ -284,7 +288,7 @@ async function loadLeague(leagueId) {
   ]);
 
   const draftPicks = [];
-  for (const draft of (drafts || []).slice(0, 3)) {
+  for (const draft of (drafts || [])) {
     try {
       const picks = await fetchJson(`${API_BASE}/draft/${draft.draft_id}/picks`, `draft picks ${draft.draft_id}`);
       draftPicks.push(...(picks || []));
@@ -399,7 +403,7 @@ function historicalSeasonsToLoad(league) {
 
 function leagueHistoryCacheKey(league, seasons) {
   const scoringHash = JSON.stringify(league.scoring_settings || {}).split('').reduce((hash, ch) => ((hash << 5) - hash + ch.charCodeAt(0)) | 0, 0);
-  return `history.${league.league_id}.${seasons.join('-')}.${scoringHash}.v4`;
+  return `history.${league.league_id}.${seasons.join('-')}.${scoringHash}.v5`;
 }
 
 function rosteredPlayerIds(league) {
@@ -898,6 +902,9 @@ function evaluateTrade() {
       <p><strong>${escapeHtml(teamName(league, rosterA))}:</strong> ${escapeHtml(describeWeakPositions(league, rosterA))}</p>
       <p><strong>${escapeHtml(teamName(league, rosterB))}:</strong> ${escapeHtml(describeWeakPositions(league, rosterB))}</p>
     </div>
+    ${renderTradePlayerCards(league, aGives, `${teamName(league, rosterA)} sends`)}
+    ${renderTradePlayerCards(league, bGives, `${teamName(league, rosterB)} sends`)}
+    ${renderTradeModelExplanation(league)}
   `;
 }
 
@@ -940,11 +947,11 @@ function renderAssetList(side) {
   }
   el.className = 'asset-list';
   el.innerHTML = assets.map((asset, idx) => {
-    const v = league ? assetValue(league, asset) : { value: 0 };
-    const title = asset.type === 'player' ? playerName(asset.playerId) : `${asset.season} Round ${asset.round}`;
+    const v = league ? assetValue(league, asset) : { value: 0, label: 'Pick', detail: '' };
+    const title = asset.type === 'player' ? playerName(asset.playerId) : v.label;
     const sub = asset.type === 'player'
       ? `${playerPrimaryPosition(asset.playerId)} • value ${v.value}`
-      : `${teamName(league, asset.originalRosterId)} original pick • value ${v.value}`;
+      : `${v.detail || 'Draft pick'} • value ${v.value}`;
     return `<div class="asset-card"><div><strong>${escapeHtml(title)}</strong><small>${escapeHtml(sub)}</small></div><button class="ghost" data-side="${side}" data-idx="${idx}">Remove</button></div>`;
   }).join('');
   el.querySelectorAll('button[data-side]').forEach(btn => {
@@ -957,27 +964,46 @@ function renderAssetList(side) {
 
 function addPlayerAsset(side, inputId) {
   const prefix = side === 'A' ? 'teamA' : 'teamB';
-  const selectedPid = $(`${prefix}PlayerSelect`)?.value || '';
-  const found = selectedPid ? { id: selectedPid } : findPlayerFromInput($(inputId).value);
-  if (!found?.id) {
-    alert('Player not found. Choose from the roster dropdown or type a full/partial player name.');
+  const selectedValue = $(`${prefix}PlayerSelect`)?.value || '';
+  let asset = parseSelectedAssetValue(selectedValue);
+
+  if (!asset) {
+    const found = findPlayerFromInput($(inputId).value);
+    if (found?.id) asset = { type: 'player', playerId: found.id };
+  }
+
+  if (!asset) {
+    alert('Asset not found. Choose a player or pick from the dropdown, or type a player name.');
     return;
   }
-  if (!state.selectedAssets[side].some(a => a.type === 'player' && a.playerId === found.id)) {
-    state.selectedAssets[side].push({ type: 'player', playerId: found.id });
+
+  const key = assetKey(asset);
+  if (!state.selectedAssets[side].some(existing => assetKey(existing) === key)) {
+    state.selectedAssets[side].push(asset);
   }
   $(inputId).value = '';
   if ($(`${prefix}PlayerSelect`)) $(`${prefix}PlayerSelect`).value = '';
   renderAssetList(side);
 }
 
-function addPickAsset(side) {
-  const prefix = side === 'A' ? 'teamA' : 'teamB';
-  const season = Number($(`${prefix}PickSeason`).value);
-  const round = Number($(`${prefix}PickRound`).value);
-  const originalRosterId = Number($(`${prefix}PickOriginal`).value);
-  state.selectedAssets[side].push({ type: 'pick', season, round, originalRosterId });
-  renderAssetList(side);
+function parseSelectedAssetValue(value) {
+  const text = String(value || '');
+  if (text.startsWith('player:')) return { type: 'player', playerId: text.split(':')[1] };
+  if (text.startsWith('pick:')) {
+    const [, season, round, originalRosterId] = text.split(':');
+    if (season && round && originalRosterId) {
+      return { type: 'pick', season: Number(season), round: Number(round), originalRosterId: Number(originalRosterId) };
+    }
+  }
+  if (/^\d+$/.test(text)) return { type: 'player', playerId: text };
+  return null;
+}
+
+function assetKey(asset) {
+  if (!asset) return '';
+  if (asset.type === 'player') return `player:${asset.playerId}`;
+  if (asset.type === 'pick') return `pick:${asset.season}:${asset.round}:${asset.originalRosterId}`;
+  return JSON.stringify(asset);
 }
 
 
@@ -1098,6 +1124,116 @@ function renderPlayerStatCard(league, playerId) {
 
       ${renderMiniGameLog(league, data)}
     </article>`;
+}
+
+function tradeRecordForSeason(league, playerId, season) {
+  const pid = String(playerId);
+  const currentSeason = currentSeasonNumber(league);
+  if (Number(season) === Number(currentSeason)) {
+    return league.playerStats?.get(pid) || league.historicalStats?.get(pid)?.seasons?.[Number(season)] || blankStatRecord(pid, Number(season));
+  }
+  return league.historicalStats?.get(pid)?.seasons?.[Number(season)] || blankStatRecord(pid, Number(season));
+}
+
+function renderTradePlayerCards(league, assets, title) {
+  const players = (assets || []).filter(asset => asset.type === 'player');
+  if (!players.length) return '';
+  return `
+    <section class="result-card trade-player-section">
+      <h3>${escapeHtml(title)}</h3>
+      <div class="trade-player-card-grid">
+        ${players.map(asset => renderTradePlayerCard(league, asset.playerId)).join('')}
+      </div>
+    </section>`;
+}
+
+function renderTradePlayerCard(league, playerId) {
+  const value = playerValue(league, playerId);
+  const player = getPlayer(playerId) || {};
+  const name = value.name || playerName(playerId);
+  const position = value.position || playerPrimaryPosition(playerId);
+  const currentSeason = currentSeasonNumber(league);
+  const previousSeason = currentSeason - 1;
+  const current = tradeRecordForSeason(league, playerId, currentSeason);
+  const previous = tradeRecordForSeason(league, playerId, previousSeason);
+  const fallback = playerFallbackAvatar(name, position);
+  const tone = statusTone(value.status || player.injury_status || player.status);
+  return `
+    <article class="player-card trade-player-card">
+      <div class="player-card-header compact-player-header">
+        <img class="player-headshot" src="${playerHeadshotUrl(playerId)}" alt="${escapeHtml(name)} headshot" onerror="this.onerror=null;this.src='${fallback}';" />
+        <div class="player-identity">
+          <h3>${escapeHtml(name)} <span class="status-dot ${tone === 'good' ? '' : tone}"></span></h3>
+          <div class="player-meta-row"><span class="position-pill">${escapeHtml(position)}</span><span>${escapeHtml(player.team || 'FA')} · value ${roundNum(value.value, 1)}</span></div>
+        </div>
+        <div class="player-score compact-score">
+          <strong>${roundNum(value.value, 1)}</strong>
+          <span>VALUE</span>
+        </div>
+      </div>
+
+      <div class="trade-season-grid">
+        ${renderSeasonSnapshot(`${currentSeason}`, current)}
+        ${renderSeasonSnapshot(`${previousSeason}`, previous)}
+      </div>
+
+      <details class="season-details">
+        <summary>View ${currentSeason} game log</summary>
+        ${renderRecordMiniLog(league, current)}
+      </details>
+      <details class="season-details">
+        <summary>View ${previousSeason} game log</summary>
+        ${renderRecordMiniLog(league, previous)}
+      </details>
+    </article>`;
+}
+
+function renderSeasonSnapshot(label, rec) {
+  const games = safeNumber(rec?.games || 0);
+  const ppg = roundNum(rec?.ppg || 0, 1);
+  const total = roundNum(rec?.total || 0, 1);
+  const last4 = roundNum(rec?.last4Avg || 0, 1);
+  const high = roundNum(rec?.high || 0, 1);
+  const source = rec?.source === 'historical' ? 'NFL stats' : 'League matchups';
+  return `
+    <div class="season-snapshot">
+      <div class="season-snapshot-title"><span>${escapeHtml(label)}</span><small>${escapeHtml(source)}</small></div>
+      <div class="season-stat-row"><span>PPG</span><strong>${ppg}</strong></div>
+      <div class="season-stat-row"><span>Total</span><strong>${total}</strong></div>
+      <div class="season-stat-row"><span>Games</span><strong>${games}</strong></div>
+      <div class="season-stat-row"><span>Last 4 / High</span><strong>${last4} / ${high}</strong></div>
+    </div>`;
+}
+
+function renderRecordMiniLog(league, rec) {
+  const rows = (rec?.weeks || []).slice(-8).reverse();
+  if (!rows.length) return '<div class="mini-log"><p class="empty">No game-log rows found for this season.</p></div>';
+  return `<div class="mini-log">${rows.map(row => {
+    const weekLabel = row.season ? `${row.season} W${row.week}` : `Week ${row.week}`;
+    const context = row.rosterId ? `${teamName(league, row.rosterId)}${row.started ? ' · started' : ' · bench'}` : 'NFL stat line';
+    return `<div class="mini-log-row"><strong>${escapeHtml(weekLabel)}</strong><span>${escapeHtml(context)}</span><strong>${roundNum(row.points, 1)}</strong></div>`;
+  }).join('')}</div>`;
+}
+
+function renderTradeModelExplanation(league) {
+  const seasons = league.historyLoadedSeasons?.length ? league.historyLoadedSeasons.join(', ') : 'none available';
+  const rules = [];
+  if (isSuperflexLeague(league)) rules.push('superflex QB boost');
+  if (isTightEndPremium(league)) rules.push('TE premium boost');
+  if (idpSlotCount(league)) rules.push(`${idpSlotCount(league)} IDP slots`);
+  const formatText = rules.length ? rules.join(', ') : 'standard positional multipliers';
+  return `
+    <section class="result-card model-explanation">
+      <h3>What the trade model used</h3>
+      <p>The player values are built from the league's scoring settings, current-season Sleeper matchup production, historical stat rows when available, positional scarcity, roster format, age/status adjustments, and recent form.</p>
+      <ul>
+        <li><strong>Current year:</strong> league matchup data for ${escapeHtml(league.season || currentSeasonNumber(league))}, including PPG, total points, start rate, last-four-week trend, and positional percentile.</li>
+        <li><strong>Previous years:</strong> best-effort historical stat fetches scored under this league's scoring rules. Loaded seasons: ${escapeHtml(seasons)}.</li>
+        <li><strong>League format:</strong> ${escapeHtml(formatText)}.</li>
+        <li><strong>Draft picks:</strong> round value, years until the pick conveys, and the original owner's projected roster strength to estimate early/mid/late pick value.</li>
+        <li><strong>Team needs:</strong> the app simulates each roster before and after the trade using starter slots, flex/superflex rules, and positional depth.</li>
+      </ul>
+    </section>`;
 }
 
 function renderMiniGameLog(league, data) {
@@ -1299,7 +1435,7 @@ function renderLeagueList() {
   const el = $('loadedLeagues');
   if (!state.leagues.length) {
     el.className = 'league-list empty';
-    el.textContent = state.savedLeagueIds.length ? `${state.savedLeagueIds.length} league ID${state.savedLeagueIds.length === 1 ? '' : 's'} saved. Tap Load saved.` : 'No leagues loaded.';
+    el.textContent = state.savedLeagueIds.length ? `Loading ${state.savedLeagueIds.length} saved league${state.savedLeagueIds.length === 1 ? '' : 's'}…` : 'No leagues loaded.';
     return;
   }
   const selected = localStorage.getItem(STORAGE_KEYS.selectedLeague) || state.leagues[0]?.league_id;
@@ -1341,6 +1477,7 @@ function fillTeamPlayerSelects() {
   const league = getSelectedLeague('tradeLeagueSelect');
   if (!league) {
     ['teamAPlayerSelect', 'teamBPlayerSelect'].forEach(id => { if ($(id)) $(id).innerHTML = '<option value="">Load a league first</option>'; });
+    renderTeamNeedNotes();
     return;
   }
   const pairs = [
@@ -1352,8 +1489,100 @@ function fillTeamPlayerSelects() {
     const players = (roster?.players || [])
       .map(pid => ({ pid: String(pid), value: playerValue(league, pid), player: getPlayer(pid) || {} }))
       .sort((a, b) => b.value.value - a.value.value);
-    $(pair.playerSelect).innerHTML = `<option value="">Choose player from ${escapeHtml(teamName(league, roster?.roster_id || 0))}</option>` + players.map(row => `<option value="${escapeHtml(row.pid)}">${escapeHtml(row.value.name)} — ${escapeHtml(row.value.position)} · ${roundNum(row.value.value)} value · ${row.value.ppg} PPG</option>`).join('');
+    const picks = ownedPicksForRoster(league, Number(roster?.roster_id || 0));
+    const playerOptions = players.map(row => `<option value="player:${escapeHtml(row.pid)}">${escapeHtml(row.value.name)} — ${escapeHtml(row.value.position)} · ${roundNum(row.value.value)} value · ${row.value.ppg} PPG</option>`).join('');
+    const pickOptions = picks.map(pick => {
+      const value = pickValue(league, pick);
+      return `<option value="pick:${pick.season}:${pick.round}:${pick.originalRosterId}">${escapeHtml(value.label)} · ${roundNum(value.value)} value · ${escapeHtml(value.detail)}</option>`;
+    }).join('');
+    $(pair.playerSelect).innerHTML = `
+      <option value="">Choose asset from ${escapeHtml(teamName(league, roster?.roster_id || 0))}</option>
+      <optgroup label="Players">${playerOptions}</optgroup>
+      <optgroup label="Draft picks">${pickOptions || '<option value="" disabled>No picks found</option>'}</optgroup>
+    `;
   }
+  renderTeamNeedNotes();
+}
+
+function ownedPicksForRoster(league, ownerRosterId) {
+  if (!league || !ownerRosterId) return [];
+  const baseSeason = currentSeasonNumber(league);
+  const seasons = [baseSeason + 1, baseSeason + 2, baseSeason + 3];
+  const rounds = Array.from({ length: Math.max(1, Math.min(10, safeNumber(league.settings?.draft_rounds, 5))) }, (_, i) => i + 1);
+  const picks = [];
+  for (const season of seasons) {
+    for (const roster of league.rosters || []) {
+      for (const round of rounds) {
+        picks.push({
+          type: 'pick',
+          season,
+          round,
+          originalRosterId: Number(roster.roster_id),
+          currentOwnerId: Number(roster.roster_id)
+        });
+      }
+    }
+  }
+
+  for (const traded of league.tradedPicks || []) {
+    const season = Number(traded.season);
+    const round = Number(traded.round);
+    const originalRosterId = Number(traded.roster_id || traded.original_roster_id || traded.originalRosterId);
+    const currentOwnerId = Number(traded.owner_id || traded.new_owner_id || traded.ownerRosterId || traded.owner_roster_id);
+    if (!season || !round || !originalRosterId || !currentOwnerId) continue;
+    const row = picks.find(pick => Number(pick.season) === season && Number(pick.round) === round && Number(pick.originalRosterId) === originalRosterId);
+    if (row) row.currentOwnerId = currentOwnerId;
+  }
+
+  return picks
+    .filter(pick => Number(pick.currentOwnerId) === Number(ownerRosterId))
+    .sort((a, b) => Number(a.season) - Number(b.season) || Number(a.round) - Number(b.round) || Number(a.originalRosterId) - Number(b.originalRosterId));
+}
+
+function renderTeamNeedNotes() {
+  const league = getSelectedLeague('tradeLeagueSelect');
+  const notes = [
+    { select: 'teamASelect', target: 'teamANeedsNote' },
+    { select: 'teamBSelect', target: 'teamBNeedsNote' }
+  ];
+  for (const note of notes) {
+    const el = $(note.target);
+    if (!el) continue;
+    const rosterId = Number($(note.select)?.value);
+    el.textContent = league && rosterId ? rosterNeedsSummary(league, rosterId) : 'Load a league to see roster needs.';
+  }
+}
+
+function rosterNeedsSummary(league, rosterId) {
+  const profile = rosterNeedProfile(league, rosterId);
+  const leagueProfiles = (league.rosters || []).map(r => rosterNeedProfile(league, r.roster_id));
+  const weak = [];
+  const shallow = [];
+  const strong = [];
+
+  for (const pos of POSITION_ORDER) {
+    const required = profile[pos]?.required || 0;
+    if (!required) continue;
+    const median = medianOf(leagueProfiles.map(p => p[pos]?.value || 0));
+    const current = profile[pos]?.value || 0;
+    const count = profile[pos]?.count || 0;
+    if (count < required) shallow.push(pos);
+    if (median && current < median * 0.88) weak.push(pos);
+    if (median && current > median * 1.18) strong.push(pos);
+  }
+
+  const formatNotes = [];
+  const flexCount = (league.roster_positions || []).filter(slot => FLEX_SLOTS.has(String(slot).toUpperCase())).length;
+  if (isSuperflexLeague(league)) formatNotes.push('QB value is elevated by superflex.');
+  if (isTightEndPremium(league)) formatNotes.push('TEs get premium scoring.');
+  if (flexCount) formatNotes.push(`${flexCount} flex slot${flexCount === 1 ? '' : 's'} push RB/WR/TE depth.`);
+  if (idpSlotCount(league)) formatNotes.push(`${idpSlotCount(league)} IDP slot${idpSlotCount(league) === 1 ? '' : 's'} matter.`);
+
+  const needText = [...new Set([...shallow, ...weak])].slice(0, 4);
+  const strongText = [...new Set(strong)].slice(0, 3);
+  const leading = needText.length ? `Needs: ${needText.join(', ')}.` : 'No major roster holes detected.';
+  const cushion = strongText.length ? ` Strength: ${strongText.join(', ')}.` : '';
+  return `${leading}${cushion} ${formatNotes.join(' ')}`.trim();
 }
 
 function fillPlayerSeasonSelect() {
@@ -1381,13 +1610,7 @@ function selectLeagueAcrossApp(leagueId) {
 }
 
 function fillPickSelects() {
-  const league = getSelectedLeague('tradeLeagueSelect');
-  const baseSeason = currentSeasonNumber(league || {});
-  for (const side of ['teamA', 'teamB']) {
-    $(`${side}PickSeason`).innerHTML = [1,2,3].map(offset => `<option value="${baseSeason + offset}">${baseSeason + offset}</option>`).join('');
-    $(`${side}PickRound`).innerHTML = [1,2,3,4,5].map(r => `<option value="${r}">Round ${r}</option>`).join('');
-    $(`${side}PickOriginal`).innerHTML = league ? league.rosters.map(r => `<option value="${r.roster_id}">${escapeHtml(teamName(league, r.roster_id))}</option>`).join('') : '';
-  }
+  fillTeamPlayerSelects();
 }
 
 function fillRecapWeeks() {
@@ -1412,31 +1635,28 @@ function renderMetrics() {
 function generateRecap() {
   const league = getSelectedLeague('recapLeagueSelect');
   if (!league) return;
-  const selectedWeek = Number($('recapWeekSelect').value);
   const range = $('recapRangeSelect').value;
+  if (range === 'offseason') {
+    generateOffseasonRecap(league);
+    return;
+  }
+  if (range === 'draft') {
+    generateDraftOnlyRecap(league);
+    return;
+  }
+
+  const selectedWeek = Number($('recapWeekSelect').value);
   const loadedWeeks = Object.keys(league.matchupsByWeek).map(Number).sort((a, b) => a - b);
   let weeks = [selectedWeek];
   if (range === 'month') weeks = loadedWeeks.filter(w => w <= selectedWeek).slice(-4);
   if (range === 'season') weeks = loadedWeeks.filter(w => w <= selectedWeek);
+  weeks = weeks.filter(Boolean);
 
   const lines = [];
   lines.push(`# Sleeper League Recap Package`);
-  lines.push(`League: ${league.name}`);
-  lines.push(`Season: ${league.season}`);
-  lines.push(`Range: ${range === 'week' ? `Week ${selectedWeek}` : range === 'month' ? `Weeks ${weeks[0]}-${weeks[weeks.length - 1]}` : `Weeks 1-${weeks[weeks.length - 1]}`}`);
-  lines.push(`Format: ${league.total_rosters} teams; roster slots ${league.roster_positions?.join(', ') || 'unknown'}`);
-  lines.push('');
-  lines.push('## League settings that matter');
-  lines.push(`- Superflex: ${isSuperflexLeague(league) ? 'Yes' : 'No'}`);
-  lines.push(`- TE premium: ${isTightEndPremium(league) ? 'Yes' : 'No'}`);
-  lines.push(`- IDP slots: ${idpSlotCount(league)}`);
-  lines.push(`- Scoring settings JSON: ${JSON.stringify(league.scoring_settings || {})}`);
-  lines.push('');
-  lines.push('## Standings snapshot');
-  [...league.rosters].sort((a, b) => safeNumber(b.settings?.wins) - safeNumber(a.settings?.wins) || totalFpts(b.settings) - totalFpts(a.settings)).forEach((r, idx) => {
-    lines.push(`${idx + 1}. ${teamName(league, r.roster_id)} — ${safeNumber(r.settings?.wins)}-${safeNumber(r.settings?.losses)}-${safeNumber(r.settings?.ties)}, PF ${roundNum(totalFpts(r.settings))}, PA ${roundNum(totalAgainst(r.settings))}, moves ${safeNumber(r.settings?.total_moves)}`);
-  });
-  lines.push('');
+  appendLeagueHeader(lines, league, range === 'week' ? `Week ${selectedWeek}` : range === 'month' ? `Weeks ${weeks[0]}-${weeks[weeks.length - 1]}` : `Weeks 1-${weeks[weeks.length - 1]}`);
+  appendLeagueSettings(lines, league);
+  appendStandingsSnapshot(lines, league);
 
   if (weeks.length > 1) {
     lines.push('## Range-wide highlights');
@@ -1487,6 +1707,299 @@ function generateRecap() {
   lines.push('## Prompt for ChatGPT');
   lines.push('Using the league data above, write an entertaining but useful fantasy football recap. Explain what happened, who won/lost the week, biggest overperformers, awful bench decisions, important trades or waiver moves, team trends, and what managers should watch next. Do not invent facts not supported by the data.');
   $('recapOutput').value = lines.join('\n');
+}
+
+function appendLeagueHeader(lines, league, rangeLabel) {
+  lines.push(`League: ${league.name}`);
+  lines.push(`Season: ${league.season}`);
+  lines.push(`Range: ${rangeLabel}`);
+  lines.push(`Format: ${league.total_rosters} teams; roster slots ${league.roster_positions?.join(', ') || 'unknown'}`);
+  lines.push('');
+}
+
+function appendLeagueSettings(lines, league) {
+  lines.push('## League settings that matter');
+  lines.push(`- Superflex: ${isSuperflexLeague(league) ? 'Yes' : 'No'}`);
+  lines.push(`- TE premium: ${isTightEndPremium(league) ? 'Yes' : 'No'}`);
+  lines.push(`- IDP slots: ${idpSlotCount(league)}`);
+  lines.push(`- Draft rounds: ${safeNumber(league.settings?.draft_rounds, 0) || 'unknown'}`);
+  lines.push(`- Trade deadline week: ${league.settings?.trade_deadline || league.settings?.trade_deadline_week || 'unknown'}`);
+  lines.push(`- Waiver/FAAB settings JSON: ${JSON.stringify({waiver_type: league.settings?.waiver_type, waiver_budget: league.settings?.waiver_budget, waiver_clear_days: league.settings?.waiver_clear_days})}`);
+  lines.push(`- Scoring settings JSON: ${JSON.stringify(league.scoring_settings || {})}`);
+  lines.push('');
+}
+
+function appendStandingsSnapshot(lines, league) {
+  lines.push('## Standings snapshot');
+  [...league.rosters].sort((a, b) => safeNumber(b.settings?.wins) - safeNumber(a.settings?.wins) || totalFpts(b.settings) - totalFpts(a.settings)).forEach((r, idx) => {
+    lines.push(`${idx + 1}. ${teamName(league, r.roster_id)} — ${safeNumber(r.settings?.wins)}-${safeNumber(r.settings?.losses)}-${safeNumber(r.settings?.ties)}, PF ${roundNum(totalFpts(r.settings))}, PA ${roundNum(totalAgainst(r.settings))}, moves ${safeNumber(r.settings?.total_moves)}`);
+  });
+  lines.push('');
+}
+
+function generateOffseasonRecap(league) {
+  const lines = [];
+  lines.push('# Sleeper League Offseason Recap Package');
+  appendLeagueHeader(lines, league, 'Offseason');
+  appendLeagueSettings(lines, league);
+  lines.push('## Data included');
+  lines.push(`- Drafts loaded: ${(league.drafts || []).length}`);
+  lines.push(`- Draft picks loaded: ${(league.draftPicks || []).length}`);
+  lines.push(`- Traded future picks currently recorded by Sleeper: ${(league.tradedPicks || []).length}`);
+  lines.push(`- Transactions loaded from available Sleeper week endpoints: ${allLoadedTransactions(league).length}`);
+  lines.push('- Note: Sleeper exposes transactions by week. True offseason activity is reconstructed from loaded draft data, traded picks, and available transaction rows; off-platform moves are not included.');
+  lines.push('');
+
+  lines.push('## Draft recap');
+  draftRecapLines(league).forEach(line => lines.push(line));
+  lines.push('');
+
+  lines.push('## Draft trades and pick movement');
+  draftTradeLines(league).forEach(line => lines.push(line));
+  lines.push('');
+
+  lines.push('## Other offseason / pre-season transaction notes');
+  offseasonTransactionLines(league).forEach(line => lines.push(line));
+  lines.push('');
+
+  lines.push('## Roster landscape after the offseason');
+  rosterLandscapeLines(league).forEach(line => lines.push(line));
+  lines.push('');
+
+  lines.push('## Prompt for ChatGPT');
+  lines.push('Using the offseason data above, write a clear fantasy football offseason recap. Include the draft story, draft winners and losers, trades or pick movement, notable free-agent/waiver activity if present, team roster needs, and what managers should watch entering the season. Do not invent facts not supported by the data.');
+  $('recapOutput').value = lines.join('\n');
+}
+
+function generateDraftOnlyRecap(league) {
+  const lines = [];
+  lines.push('# Sleeper Draft Recap + Draft Trade Package');
+  appendLeagueHeader(lines, league, 'Draft recap and draft trades');
+  appendLeagueSettings(lines, league);
+
+  lines.push('## Draft recap');
+  draftRecapLines(league).forEach(line => lines.push(line));
+  lines.push('');
+
+  lines.push('## Trades made during or around the draft');
+  draftTradeLines(league).forEach(line => lines.push(line));
+  lines.push('');
+
+  lines.push('## Prompt for ChatGPT');
+  lines.push('Using only the draft and draft-trade data above, write a focused fantasy football draft recap. Identify the best draft classes, risky reaches, value picks, positional runs, draft-day trades, and which teams changed their outlook the most. Do not invent facts not supported by the data.');
+  $('recapOutput').value = lines.join('\n');
+}
+
+function draftRecapLines(league) {
+  const lines = [];
+  const drafts = (league.drafts || []).slice().sort((a, b) => safeNumber(b.start_time || b.created || b.last_picked) - safeNumber(a.start_time || a.created || a.last_picked));
+  const picks = (league.draftPicks || []).slice().sort((a, b) => safeNumber(a.pick_no) - safeNumber(b.pick_no) || safeNumber(a.round) - safeNumber(b.round));
+  if (!drafts.length && !picks.length) return ['- No draft data was loaded for this league.'];
+
+  if (drafts.length) {
+    lines.push('### Drafts loaded');
+    drafts.forEach((draft, idx) => {
+      const draftPicks = picks.filter(p => !draft.draft_id || !p.draft_id || String(p.draft_id) === String(draft.draft_id));
+      const start = formatMaybeDate(draft.start_time || draft.created);
+      lines.push(`${idx + 1}. ${draft.metadata?.name || draft.type || 'Draft'} — status ${draft.status || 'unknown'}, ${safeNumber(draft.settings?.rounds || league.settings?.draft_rounds, 0) || 'unknown'} rounds, ${draftPicks.length || 'unknown'} picks${start ? `, started ${start}` : ''}.`);
+    });
+    lines.push('');
+  }
+
+  const completedPicks = picks.filter(p => p.player_id);
+  if (!completedPicks.length) {
+    lines.push('- No completed draft picks found yet.');
+    return lines;
+  }
+
+  const firstRound = completedPicks.filter(p => Number(p.round) === 1).sort((a, b) => safeNumber(a.pick_no) - safeNumber(b.pick_no));
+  lines.push('### First round');
+  (firstRound.length ? firstRound : completedPicks.slice(0, Math.min(12, completedPicks.length))).forEach(pick => {
+    lines.push(`- ${formatDraftPickLabel(league, pick)} — ${playerName(pick.player_id)} (${playerPrimaryPosition(pick.player_id)})${pick.metadata?.team ? `, ${pick.metadata.team}` : ''}.`);
+  });
+  lines.push('');
+
+  const classes = draftClasses(league, completedPicks);
+  if (classes.length) {
+    lines.push('### Draft class summary by team');
+    classes.slice(0, Math.min(league.total_rosters || 12, classes.length)).forEach((row, idx) => {
+      const top = row.picks.slice(0, 4).map(p => `${playerName(p.player_id)} (${roundPickText(p)})`).join(', ');
+      lines.push(`${idx + 1}. ${teamName(league, row.rosterId)} — ${row.picks.length} picks, estimated drafted player value ${roundNum(row.value)}. Top picks: ${top || 'none'}.`);
+    });
+    lines.push('');
+  }
+
+  const topValues = completedPicks
+    .map(pick => ({ pick, value: playerValue(league, pick.player_id).value }))
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 12);
+  lines.push('### Highest current model values from the draft');
+  topValues.forEach((row, idx) => {
+    lines.push(`${idx + 1}. ${playerName(row.pick.player_id)} (${playerPrimaryPosition(row.pick.player_id)}) — ${formatDraftPickLabel(league, row.pick)}, model value ${roundNum(row.value)}.`);
+  });
+
+  const positionCounts = groupCounts(completedPicks.map(p => playerPrimaryPosition(p.player_id)));
+  lines.push('');
+  lines.push(`### Position mix`);
+  lines.push(`- ${Object.entries(positionCounts).sort((a, b) => b[1] - a[1]).map(([pos, count]) => `${pos}: ${count}`).join('; ') || 'No position data.'}`);
+  return lines;
+}
+
+function draftTradeLines(league) {
+  const lines = [];
+  const txRows = allLoadedTransactions(league)
+    .filter(({ tx }) => isTradeTransaction(tx))
+    .map(({ week, tx }) => ({ week, tx, summary: transactionSummary(league, tx), score: draftTradeScore(league, tx) }))
+    .filter(row => row.score > 0 || /draft|pick|R\d|round/i.test(row.summary || ''))
+    .sort((a, b) => b.score - a.score || safeNumber(a.tx.created) - safeNumber(b.tx.created));
+
+  if (txRows.length) {
+    lines.push('### Loaded draft-related trades');
+    txRows.slice(0, 20).forEach(row => {
+      const when = formatMaybeDate(row.tx.created);
+      lines.push(`- ${when ? `${when}; ` : ''}Week ${row.week}: ${row.summary} Approx pick/player value involved: ${roundNum(transactionImpact(league, row.tx))}.`);
+    });
+  } else {
+    lines.push('### Loaded draft-related trades');
+    lines.push('- No draft-day trade transactions were found in the loaded Sleeper transaction rows.');
+  }
+
+  const traded = (league.tradedPicks || []).slice().sort((a, b) => Number(a.season) - Number(b.season) || Number(a.round) - Number(b.round));
+  lines.push('');
+  lines.push('### Current traded future picks');
+  if (!traded.length) {
+    lines.push('- No traded future picks are currently listed by Sleeper for this league.');
+  } else {
+    traded.slice(0, 40).forEach(p => {
+      const original = Number(p.roster_id || p.original_roster_id || p.originalRosterId);
+      const owner = Number(p.owner_id || p.new_owner_id || p.ownerRosterId || p.owner_roster_id);
+      lines.push(`- ${p.season} Round ${p.round}: originally ${teamName(league, original)}, currently owned by ${teamName(league, owner)}.`);
+    });
+    if (traded.length > 40) lines.push(`- Plus ${traded.length - 40} more traded picks.`);
+  }
+  return lines;
+}
+
+function offseasonTransactionLines(league) {
+  const rows = allLoadedTransactions(league)
+    .map(({ week, tx }) => ({ week, tx, summary: transactionSummary(league, tx), impact: transactionImpact(league, tx) }))
+    .filter(row => row.summary)
+    .sort((a, b) => Math.abs(b.impact) - Math.abs(a.impact));
+  if (!rows.length) return ['- No transaction rows are loaded for offseason analysis.'];
+
+  const trades = rows.filter(r => isTradeTransaction(r.tx)).slice(0, 8);
+  const adds = rows.filter(r => !isTradeTransaction(r.tx) && Object.keys(r.tx.adds || {}).length).slice(0, 12);
+  const lines = [];
+  if (trades.length) {
+    lines.push('### Biggest loaded trades');
+    trades.forEach(r => lines.push(`- Week ${r.week}: ${r.summary} Approx value swing: ${roundNum(r.impact)}.`));
+  } else {
+    lines.push('### Biggest loaded trades');
+    lines.push('- No trade transactions loaded outside the draft-pick movement above.');
+  }
+  lines.push('');
+  lines.push('### Notable adds / drops');
+  if (adds.length) adds.forEach(r => lines.push(`- Week ${r.week}: ${r.summary} Approx value swing: ${roundNum(r.impact)}.`));
+  else lines.push('- No notable add/drop rows loaded.');
+  return lines;
+}
+
+function rosterLandscapeLines(league) {
+  const lines = [];
+  const rows = [...(league.teamStrength || new Map()).entries()].sort((a, b) => b[1].score - a[1].score);
+  if (!rows.length) return ['- Roster strength data is unavailable.'];
+  lines.push('### Current roster strength');
+  rows.slice(0, 5).forEach(([rid, s], idx) => lines.push(`${idx + 1}. ${teamName(league, rid)} — total value ${roundNum(s.rosterValue)}, starter value ${roundNum(s.startersValue)}, potential PF ${roundNum(s.maxpf)}.`));
+  lines.push('');
+  lines.push('### Team needs entering the season');
+  rows.forEach(([rid]) => lines.push(`- ${teamName(league, rid)}: ${rosterNeedsSummary(league, rid)}`));
+  return lines;
+}
+
+function allLoadedTransactions(league) {
+  return Object.entries(league.transactionsByWeek || {})
+    .flatMap(([week, txs]) => (txs || []).map(tx => ({ week: Number(week), tx })))
+    .filter(row => row.tx);
+}
+
+function isTradeTransaction(tx) {
+  return String(tx?.type || '').toLowerCase().includes('trade') || Array.isArray(tx?.draft_picks) && tx.draft_picks.length > 0;
+}
+
+function draftTradeScore(league, tx) {
+  let score = 0;
+  score += (tx?.draft_picks || []).length * 10;
+  const created = safeNumber(tx?.created);
+  for (const draft of league.drafts || []) {
+    const start = safeNumber(draft.start_time || draft.created);
+    if (!created || !start) continue;
+    const diff = Math.abs(created - start);
+    if (diff <= 1000 * 60 * 60 * 36) score += 8;
+  }
+  if (score > 0) {
+    score += Object.keys(tx?.adds || {}).length;
+    score += Object.keys(tx?.drops || {}).length;
+  }
+  return score;
+}
+
+function draftClasses(league, picks) {
+  const map = new Map();
+  picks.forEach(pick => {
+    const rid = draftPickRosterId(league, pick);
+    if (!rid) return;
+    if (!map.has(rid)) map.set(rid, { rosterId: rid, value: 0, picks: [] });
+    const row = map.get(rid);
+    row.picks.push(pick);
+    row.value += playerValue(league, pick.player_id).value;
+  });
+  return [...map.values()].map(row => {
+    row.picks.sort((a, b) => safeNumber(a.pick_no) - safeNumber(b.pick_no));
+    return row;
+  }).sort((a, b) => b.value - a.value || b.picks.length - a.picks.length);
+}
+
+function draftPickRosterId(league, pick) {
+  const direct = Number(pick.roster_id || pick.rosterId || pick.owner_id || pick.ownerRosterId);
+  if (direct && league.rosterMap?.has(direct)) return direct;
+  const slot = Number(pick.draft_slot || pick.slot);
+  const draft = (league.drafts || []).find(d => String(d.draft_id) === String(pick.draft_id));
+  const fromSlot = Number(draft?.slot_to_roster_id?.[slot] || draft?.metadata?.slot_to_roster_id?.[slot]);
+  if (fromSlot && league.rosterMap?.has(fromSlot)) return fromSlot;
+  return direct || slot || 0;
+}
+
+function formatDraftPickLabel(league, pick) {
+  const pickNo = safeNumber(pick.pick_no || pick.pick, 0);
+  const round = safeNumber(pick.round, 0);
+  const rosterId = draftPickRosterId(league, pick);
+  const slotText = pickNo ? `Pick ${pickNo}` : round ? `Round ${round}` : 'Draft pick';
+  const roundText = round ? `R${round}` : '';
+  const teamText = rosterId ? `to ${teamName(league, rosterId)}` : 'team unknown';
+  return `${slotText}${roundText ? ` (${roundText})` : ''} ${teamText}`;
+}
+
+function roundPickText(pick) {
+  const round = safeNumber(pick.round, 0);
+  const pickNo = safeNumber(pick.pick_no || pick.pick, 0);
+  return round && pickNo ? `R${round}, pick ${pickNo}` : round ? `R${round}` : pickNo ? `pick ${pickNo}` : 'pick';
+}
+
+function groupCounts(values) {
+  return (values || []).reduce((obj, val) => {
+    const key = val || 'UNK';
+    obj[key] = (obj[key] || 0) + 1;
+    return obj;
+  }, {});
+}
+
+function formatMaybeDate(value) {
+  const num = safeNumber(value);
+  if (!num) return '';
+  const ms = num < 10_000_000_000 ? num * 1000 : num;
+  const date = new Date(ms);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 
@@ -1656,31 +2169,39 @@ function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
 }
 
-async function loadAll() {
-  const ids = parseLeagueIds(`${$('leagueIds').value}\n${$('leagueIdInput')?.value || ''}`);
+async function loadAll(idsOverride = null) {
+  const raw = Array.isArray(idsOverride) ? idsOverride.join('\n') : (idsOverride || state.savedLeagueIds.join('\n'));
+  const ids = parseLeagueIds(raw);
   if (!ids.length) {
     alert('Add at least one valid Sleeper league ID.');
     return;
   }
   saveLeagueIds(ids);
-  $('leagueIdInput').value = '';
+  if ($('leagueIdInput')) $('leagueIdInput').value = '';
   setBusy(true);
   try {
     if (!state.nflState) await loadNflState();
     if (!Object.keys(state.players || {}).length) await loadPlayers();
 
+    const existing = new Map(state.leagues.map(league => [String(league.league_id), league]));
     const loaded = [];
     for (const id of ids) {
       try {
-        const league = await loadLeague(id);
-        loaded.push(league);
+        if (existing.has(String(id))) {
+          loaded.push(existing.get(String(id)));
+        } else {
+          const league = await loadLeague(id);
+          loaded.push(league);
+        }
       } catch (err) {
         logStatus(err.message);
         console.error(err);
       }
     }
     state.leagues = loaded;
-    if (!localStorage.getItem(STORAGE_KEYS.selectedLeague) && loaded[0]) localStorage.setItem(STORAGE_KEYS.selectedLeague, loaded[0].league_id);
+    const stored = localStorage.getItem(STORAGE_KEYS.selectedLeague);
+    if (!stored && loaded[0]) localStorage.setItem(STORAGE_KEYS.selectedLeague, loaded[0].league_id);
+    if (stored && !loaded.some(l => String(l.league_id) === String(stored)) && loaded[0]) localStorage.setItem(STORAGE_KEYS.selectedLeague, loaded[0].league_id);
     state.selectedAssets = { A: [], B: [] };
     renderEverything();
   } finally {
@@ -1698,7 +2219,8 @@ function renderEverything() {
 }
 
 function wireEvents() {
-  $('loadLeaguesBtn').addEventListener('click', loadAll);
+  const loadBtn = $('loadLeaguesBtn');
+  if (loadBtn) loadBtn.addEventListener('click', () => loadAll());
   $('addLeagueIdBtn').addEventListener('click', addSavedLeagueId);
   $('leagueIdInput').addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); addSavedLeagueId(); } });
   $('clearBtn').addEventListener('click', () => {
@@ -1707,7 +2229,6 @@ function wireEvents() {
     localStorage.removeItem(STORAGE_KEYS.leagues);
     localStorage.removeItem(STORAGE_KEYS.selectedLeague);
     state.savedLeagueIds = [];
-    $('leagueIds').value = '';
     $('leagueIdInput').value = '';
     renderEverything();
     logStatus('Cleared leagues from this browser.');
@@ -1740,13 +2261,13 @@ function wireEvents() {
 
   $('teamAAddPlayer').addEventListener('click', () => addPlayerAsset('A', 'teamAPlayerSearch'));
   $('teamBAddPlayer').addEventListener('click', () => addPlayerAsset('B', 'teamBPlayerSearch'));
-  $('teamAAddPick').addEventListener('click', () => addPickAsset('A'));
-  $('teamBAddPick').addEventListener('click', () => addPickAsset('B'));
   $('evaluateTradeBtn').addEventListener('click', evaluateTrade);
   $('resetTradeBtn').addEventListener('click', () => { state.selectedAssets = { A: [], B: [] }; renderAssetList('A'); renderAssetList('B'); $('tradeResult').className = 'trade-result empty'; $('tradeResult').textContent = 'Choose teams and assets, then evaluate.'; });
   $('generateWeekRecapBtn').addEventListener('click', () => { $('recapRangeSelect').value = 'week'; generateRecap(); });
   $('generateMonthRecapBtn').addEventListener('click', () => { $('recapRangeSelect').value = 'month'; generateRecap(); });
   $('generateSeasonRecapBtn').addEventListener('click', () => { $('recapRangeSelect').value = 'season'; generateRecap(); });
+  $('generateOffseasonRecapBtn').addEventListener('click', () => { $('recapRangeSelect').value = 'offseason'; generateRecap(); });
+  $('generateDraftRecapBtn').addEventListener('click', () => { $('recapRangeSelect').value = 'draft'; generateRecap(); });
   $('copyRecapBtn').addEventListener('click', async () => { await navigator.clipboard.writeText($('recapOutput').value); logStatus('Copied recap text to clipboard.'); });
   $('exportDataBtn').addEventListener('click', exportData);
   $('playerValueSearch').addEventListener('input', renderPlayerValues);
@@ -1794,12 +2315,12 @@ async function boot() {
   wireEvents();
   applySettingsToUI();
   saveLeagueIds(state.savedLeagueIds);
-  $('leagueIds').value = state.savedLeagueIds.join('\n');
   renderEverything();
   try {
     await loadNflState();
     await loadPlayers();
     renderMetrics();
+    if (state.savedLeagueIds.length) await loadAll(state.savedLeagueIds);
   } catch (err) {
     logStatus(`Initial data load warning: ${err.message}`);
     console.warn(err);

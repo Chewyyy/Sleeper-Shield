@@ -30,23 +30,15 @@
           <input id="leagueIdInput" inputmode="numeric" placeholder="Sleeper league ID" />
           <button id="addLeagueIdBtn" class="primary">Add</button>
         </div>
-        <label for="leagueIds" class="saved-label">Saved league IDs</label>
-        <textarea id="leagueIds" rows="4" placeholder="Saved league IDs appear here. One per line."></textarea>
-        <div class="button-row">
-          <button id="loadLeaguesBtn" class="primary">Load saved</button>
-          <button id="clearBtn" class="ghost">Clear</button>
+        <div class="button-row single-action">
+          <button id="clearBtn" class="ghost">Clear saved leagues</button>
         </div>
-        <p class="hint">League IDs save in this browser. Public Sleeper data only. No login required.</p>
+        <p class="hint">Saved leagues load automatically on this device. Public Sleeper data only. No login required.</p>
       </section>
 
       <section class="panel compact">
         <div class="section-title">Leagues</div>
         <div id="loadedLeagues" class="league-list empty">No leagues loaded.</div>
-      </section>
-
-      <section class="panel compact">
-        <div class="section-title">Status</div>
-        <div id="statusLog" class="status-log">Ready.</div>
       </section>
     </aside>
 
@@ -99,16 +91,22 @@
 
       <section id="trade" class="tab-panel">
         <div class="panel">
-          <div class="form-grid">
+          <div class="form-grid trade-team-grid">
             <label>League
               <select id="tradeLeagueSelect"></select>
             </label>
-            <label>Team A
-              <select id="teamASelect"></select>
-            </label>
-            <label>Team B
-              <select id="teamBSelect"></select>
-            </label>
+            <div class="team-select-block">
+              <label>Team A
+                <select id="teamASelect"></select>
+              </label>
+              <p id="teamANeedsNote" class="team-need-note">Load a league to see roster needs.</p>
+            </div>
+            <div class="team-select-block">
+              <label>Team B
+                <select id="teamBSelect"></select>
+              </label>
+              <p id="teamBNeedsNote" class="team-need-note">Load a league to see roster needs.</p>
+            </div>
           </div>
         </div>
 
@@ -117,15 +115,9 @@
             <h3>Team A sends</h3>
             <div class="asset-controls">
               <select id="teamAPlayerSelect"></select>
-              <button id="teamAAddPlayer" class="secondary">Add player</button>
+              <button id="teamAAddPlayer" class="secondary">Add asset</button>
             </div>
             <input id="teamAPlayerSearch" list="playerOptions" placeholder="Or search any player" />
-            <div class="pick-controls">
-              <select id="teamAPickSeason"></select>
-              <select id="teamAPickRound"></select>
-              <select id="teamAPickOriginal"></select>
-              <button id="teamAAddPick" class="secondary">Add pick</button>
-            </div>
             <div id="teamAAssets" class="asset-list empty">No assets selected.</div>
           </section>
 
@@ -133,15 +125,9 @@
             <h3>Team B sends</h3>
             <div class="asset-controls">
               <select id="teamBPlayerSelect"></select>
-              <button id="teamBAddPlayer" class="secondary">Add player</button>
+              <button id="teamBAddPlayer" class="secondary">Add asset</button>
             </div>
             <input id="teamBPlayerSearch" list="playerOptions" placeholder="Or search any player" />
-            <div class="pick-controls">
-              <select id="teamBPickSeason"></select>
-              <select id="teamBPickRound"></select>
-              <select id="teamBPickOriginal"></select>
-              <button id="teamBAddPick" class="secondary">Add pick</button>
-            </div>
             <div id="teamBAssets" class="asset-list empty">No assets selected.</div>
           </section>
         </div>
@@ -169,6 +155,8 @@
                 <option value="week">Selected week</option>
                 <option value="month">Last 4 loaded weeks</option>
                 <option value="season">Season to date</option>
+                <option value="offseason">Offseason recap</option>
+                <option value="draft">Draft recap + draft trades</option>
               </select>
             </label>
           </div>
@@ -176,6 +164,8 @@
             <button id="generateWeekRecapBtn" class="primary">This week</button>
             <button id="generateMonthRecapBtn" class="secondary">This month</button>
             <button id="generateSeasonRecapBtn" class="secondary">This season</button>
+            <button id="generateOffseasonRecapBtn" class="secondary">Offseason</button>
+            <button id="generateDraftRecapBtn" class="secondary">Draft recap</button>
             <button id="copyRecapBtn" class="ghost">Copy recap</button>
           </div>
           <p class="hint">Structured for easy pasting into ChatGPT.</p>

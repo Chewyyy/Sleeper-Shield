@@ -1,23 +1,6 @@
 # Sleeper Trade Shield
 
-A static, iPhone-friendly dark-mode web app for Sleeper fantasy football league analysis, trade evaluation, player comparison, and league recap generation.
-
-## What it does
-
-- Saves multiple Sleeper league IDs in the browser.
-- Lets the user load saved leagues and switch between them.
-- Pulls public/read-only Sleeper league data: users, rosters, matchups, transactions, traded picks, drafts, league settings, scoring settings, and player metadata.
-- Shows league rules and scoring settings in a readable dashboard panel.
-- Caches the large Sleeper player database in IndexedDB.
-- Attempts to fetch past NFL player stats for the current and prior two seasons through Sleeper's public stats endpoint, then scores those stats using the league scoring settings.
-- Falls back to league matchup scoring and player metadata when historical stats are unavailable.
-- Estimates player value using scoring-adjusted production, recent form, age, position scarcity, roster format, start rate, health/status, and historical production.
-- Estimates draft-pick value using round, season, and the original roster's strength.
-- Evaluates trades using raw asset value plus team-need adjustment.
-- Adds team-roster dropdowns in the trade tab, so selecting a team fills a player picker with that team's roster.
-- Generates structured recap packages for week/month/season summaries.
-- Includes player stat cards with headshots, value, PPG, last-four trend, starts, rank, status, and game log.
-- Includes an iPhone-optimized Apple-style layout with safe-area support, large touch targets, bottom tab navigation, responsive cards, and standalone web-app metadata.
+A static, iPhone-friendly fantasy football trade evaluator for Sleeper leagues.
 
 ## Run locally
 
@@ -25,22 +8,26 @@ A static, iPhone-friendly dark-mode web app for Sleeper fantasy football league 
 python3 -m http.server 5173
 ```
 
-Then open:
+Open:
 
 ```text
 http://localhost:5173
 ```
 
-## iPhone testing
+## What it does
 
-For quick iPhone testing, run the server on your computer and open the local network address on your iPhone, for example:
-
-```text
-http://192.168.1.10:5173
-```
-
-For the most app-like experience on iPhone, open the site in Safari, tap Share, then choose **Add to Home Screen**.
+- Saves Sleeper league IDs locally in the browser.
+- Automatically reloads saved leagues when the app opens.
+- Lets you add multiple leagues and switch between them.
+- Loads league settings, rosters, users, matchups, transactions, traded picks, drafts, and player metadata.
+- Shows the league format and scoring rules.
+- Builds roster-strength and team-need summaries from league rules and roster slots.
+- Trade tool supports players and draft picks from each selected team's asset dropdown.
+- Trade evaluation includes current-year and previous-year stat cards for involved players.
+- Draft-pick values estimate early/mid/late value from the original owner's roster strength.
+- Recap generator creates week/month/season/offseason league packages to paste into ChatGPT.
+- Draft recap generator summarizes draft classes, top picks, current model value from drafted players, draft-day trades, and traded future picks.
 
 ## Historical stats note
 
-Sleeper's official documented API is public/read-only and does not require a token. The broader player stats endpoint used for past-year stats is not part of the currently supported official documentation, so the app treats it as best-effort. If it is unavailable, blocked, or returns no rows, the app continues working with league matchup data and metadata-based fallback values.
+Sleeper's documented public API is read-only and does not require login. Historical player stats are fetched through Sleeper's public stats endpoint on a best-effort basis, then rescored using the league's scoring settings. If those rows are unavailable, the model falls back to matchup data and player metadata.
