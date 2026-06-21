@@ -25,13 +25,18 @@
       </div>
 
       <section class="panel compact">
-        <label for="leagueIds">League IDs</label>
-        <textarea id="leagueIds" rows="5" placeholder="Paste Sleeper league IDs"></textarea>
+        <label for="leagueIdInput">Add league ID</label>
+        <div class="league-add-row">
+          <input id="leagueIdInput" inputmode="numeric" placeholder="Sleeper league ID" />
+          <button id="addLeagueIdBtn" class="primary">Add</button>
+        </div>
+        <label for="leagueIds" class="saved-label">Saved league IDs</label>
+        <textarea id="leagueIds" rows="4" placeholder="Saved league IDs appear here. One per line."></textarea>
         <div class="button-row">
-          <button id="loadLeaguesBtn" class="primary">Load</button>
+          <button id="loadLeaguesBtn" class="primary">Load saved</button>
           <button id="clearBtn" class="ghost">Clear</button>
         </div>
-        <p class="hint">Public Sleeper data only. No login required.</p>
+        <p class="hint">League IDs save in this browser. Public Sleeper data only. No login required.</p>
       </section>
 
       <section class="panel compact">
@@ -82,6 +87,14 @@
             <div id="strengthTable" class="table-wrap"></div>
           </section>
         </div>
+
+        <section class="panel">
+          <div class="panel-heading-row">
+            <h3>League rules</h3>
+            <select id="rulesLeagueSelect"></select>
+          </div>
+          <div id="leagueRulesPanel" class="rules-panel empty">Load a league to view format and scoring rules.</div>
+        </section>
       </section>
 
       <section id="trade" class="tab-panel">
@@ -103,9 +116,10 @@
           <section class="panel asset-panel">
             <h3>Team A sends</h3>
             <div class="asset-controls">
-              <input id="teamAPlayerSearch" list="playerOptions" placeholder="Search player name" />
+              <select id="teamAPlayerSelect"></select>
               <button id="teamAAddPlayer" class="secondary">Add player</button>
             </div>
+            <input id="teamAPlayerSearch" list="playerOptions" placeholder="Or search any player" />
             <div class="pick-controls">
               <select id="teamAPickSeason"></select>
               <select id="teamAPickRound"></select>
@@ -118,9 +132,10 @@
           <section class="panel asset-panel">
             <h3>Team B sends</h3>
             <div class="asset-controls">
-              <input id="teamBPlayerSearch" list="playerOptions" placeholder="Search player name" />
+              <select id="teamBPlayerSelect"></select>
               <button id="teamBAddPlayer" class="secondary">Add player</button>
             </div>
+            <input id="teamBPlayerSearch" list="playerOptions" placeholder="Or search any player" />
             <div class="pick-controls">
               <select id="teamBPickSeason"></select>
               <select id="teamBPickRound"></select>
@@ -173,6 +188,11 @@
           <div class="form-grid player-controls">
             <label>League
               <select id="playerLeagueSelect"></select>
+            </label>
+            <label>Stats season
+              <select id="playerStatsSeasonSelect">
+                <option value="auto">Best available</option>
+              </select>
             </label>
             <label>Player A
               <input id="playerCompareA" list="playerOptions" placeholder="Search first player" />

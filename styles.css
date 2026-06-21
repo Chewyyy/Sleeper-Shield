@@ -616,3 +616,97 @@ input[type="range"] { min-height: 28px; padding: 0; accent-color: var(--accent-s
   .player-score small { display: none; }
   .stat-tile-grid, .stat-tile-grid.three { grid-template-columns: 1fr 1fr; }
 }
+
+.league-add-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 9px;
+  align-items: end;
+  margin-bottom: 12px;
+}
+.saved-label { margin-top: 4px; }
+.league-card-button {
+  width: 100%;
+  min-height: auto;
+  padding: 14px;
+  border-radius: 18px;
+  text-align: left;
+  display: block;
+}
+.league-card-button.active {
+  border-color: rgba(90, 167, 255, 0.38);
+  background: rgba(90, 167, 255, 0.12);
+}
+.panel-heading-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 320px);
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 14px;
+}
+.panel-heading-row h3 { margin: 0; }
+.rules-panel { display: grid; gap: 16px; }
+.rules-chip-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+.rules-chip, .scoring-row {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(255,255,255,0.045);
+  padding: 12px;
+}
+.rules-chip span, .scoring-row span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 720;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+.rules-chip strong {
+  display: block;
+  margin-top: 6px;
+  font-size: 1rem;
+  line-height: 1.18;
+}
+.rules-panel h4 {
+  margin: 2px 0 -4px;
+  color: var(--muted-2);
+  font-size: 0.86rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.scoring-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.scoring-row strong {
+  display: block;
+  margin-top: 6px;
+  font-size: 1.2rem;
+}
+.scoring-row small {
+  display: block;
+  margin-top: 3px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--muted);
+}
+.asset-panel > input[list] { margin-bottom: 10px; }
+
+@media (max-width: 760px) {
+  .league-add-row { grid-template-columns: 1fr; }
+  .panel-heading-row { grid-template-columns: 1fr; }
+  .rules-chip-grid, .scoring-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .player-controls { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 390px) {
+  .rules-chip-grid, .scoring-grid { grid-template-columns: 1fr; }
+}
+@media (min-width: 761px) {
+  .player-controls { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .compact-controls { grid-template-columns: 1fr 160px 220px; }
+}
