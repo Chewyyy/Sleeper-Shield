@@ -2022,6 +2022,38 @@ function selectedCompareIds() {
   };
 }
 
+function compareSlotMarkup(slot, playerId) {
+  if (!playerId) {
+    return `<button type="button" class="compare-slot empty" disabled>
+      <span class="selection-badge ${slot === 'B' ? 'second' : 'first'}">${slot === 'B' ? '2' : '1'}</span>
+      <span><strong>${slot === 'B' ? 'Second player' : 'First player'}</strong><small>${slot === 'B' ? 'Second tap fills this slot' : 'First tap fills this slot'}</small></span>
+    </button>`;
+  }
+  const player = getPlayer(playerId) || {};
+  const valueLeague = getSelectedLeague('playerLeagueSelect');
+  const value = valueLeague ? playerValue(valueLeague, playerId) : null;
+  return `<button type="button" class="compare-slot selected ${slot === 'B' ? 'slot-b' : 'slot-a'}" data-clear-compare-slot="${slot}">
+    <span class="selection-badge ${slot === 'B' ? 'second' : 'first'}">${slot === 'B' ? '2' : '1'}</span>
+    <span><strong>${escapeHtml(playerName(playerId))}</strong><small>${escapeHtml(player.position || 'UNK')} · ${escapeHtml(player.team || 'FA')}${value ? ` · ${roundNum(value.value)} value` : ''}</small></span>
+    <em>×</em>
+  </button>`;
+}
+
+function renderCompareSelectionSlots() {
+  const el = $('compareSelectionSlots');
+  if (!el) return;
+  const selected = selectedCompareIds();
+  el.innerHTML = `${compareSlotMarkup('A', selected.A)}${compareSlotMarkup('B', selected.B)}`;
+  el.querySelectorAll('[data-clear-compare-slot]').forEach(button => {
+    button.addEventListener('click', () => {
+      const slot = button.dataset.clearCompareSlot;
+      $(slot === 'B' ? 'playerCompareB' : 'playerCompareA').value = '';
+      renderPlayerComparison();
+      renderPlayerValues();
+    });
+  });
+}
+
 function togglePlayerValueSelection(playerId) {
   const player = state.playerSearch.find(p => String(p.id) === String(playerId));
   if (!player) return;
@@ -2044,6 +2076,7 @@ function togglePlayerValueSelection(playerId) {
 }
 
 function renderPlayerComparison() {
+  renderCompareSelectionSlots();
   const league = getSelectedLeague('playerLeagueSelect');
   const el = $('playerCompareOutput');
   if (!el) return;
@@ -2051,11 +2084,11 @@ function renderPlayerComparison() {
     el.innerHTML = '<section class="panel"><p class="empty">Load a league first.</p></section>';
     return;
   }
-  const a = findPlayerFromInput($('playerCompareA').value);
-  const b = findPlayerFromInput($('playerCompareB').value);
+  const a = findPlayerFromInput($('playerCompareA')?.value || '');
+  const b = findPlayerFromInput($('playerCompareB')?.value || '');
   const ids = [a?.id, b?.id].filter(Boolean);
   if (!ids.length) {
-    el.innerHTML = '<section class="panel"><p class="empty">Search for one or two players, then build the player cards. You can also click a row in the player value table.</p></section>';
+    el.innerHTML = '<section class="panel"><p class="empty">Tap a player in the value table to start comparing.</p></section>';
     return;
   }
   const cards = ids.map(pid => renderPlayerStatCard(league, pid)).join('');
@@ -2169,13 +2202,15 @@ function renderPlayerValues() {
     .sort((a, b) => b.value - a.value)
     .slice(0, 250);
   const selected = selectedCompareIds();
+  renderCompareSelectionSlots();
   el.innerHTML = `<table><thead><tr><th>Player</th><th>Pos</th><th>Value</th><th>PPG</th><th>Last 5</th><th>Games</th><th>Model</th><th>Status</th></tr></thead><tbody>${rows.map(v => {
     const isA = String(selected.A) === String(v.playerId);
     const isB = String(selected.B) === String(v.playerId);
     const selectedClass = isA ? ' selected-a' : isB ? ' selected-b' : '';
-    const selectionText = isA ? 'Selected 1 · click to remove' : isB ? 'Selected 2 · click to remove' : selected.A && selected.B ? '2 selected · click selected row to change' : 'click to select';
+    const locked = selected.A && selected.B && !isA && !isB;
+    const selectionText = isA ? 'Selected 1 · tap again to remove' : isB ? 'Selected 2 · tap again to remove' : locked ? 'Both slots filled' : !selected.A ? 'Tap to select 1' : 'Tap to select 2';
     const selectionBadge = isA ? '<span class="selection-badge first">1</span>' : isB ? '<span class="selection-badge second">2</span>' : '';
-    return `<tr class="player-row-clickable${selectedClass}" data-player-id="${escapeHtml(v.playerId)}"><td><div class="player-table-name-row">${selectionBadge}<span>${escapeHtml(v.name)}</span></div><small>${escapeHtml(getPlayer(v.playerId)?.team || 'FA')} · ${escapeHtml(selectionText)}</small></td><td>${escapeHtml(v.position)}</td><td><strong>${roundNum(v.value)}</strong></td><td>${v.ppg}</td><td>${v.last4}</td><td>${v.games}</td><td>${escapeHtml(v.valueModel || v.source || '')}</td><td>${escapeHtml(v.status || '')}</td></tr>`;
+    return `<tr class="player-row-clickable${selectedClass}${locked ? ' selection-locked' : ''}" data-player-id="${escapeHtml(v.playerId)}"><td><div class="player-table-name-row">${selectionBadge}<span>${escapeHtml(v.name)}</span></div><small>${escapeHtml(getPlayer(v.playerId)?.team || 'FA')} · ${escapeHtml(selectionText)}</small></td><td>${escapeHtml(v.position)}</td><td><strong>${roundNum(v.value)}</strong></td><td>${v.ppg}</td><td>${v.last4}</td><td>${v.games}</td><td>${escapeHtml(v.valueModel || v.source || '')}</td><td>${escapeHtml(v.status || '')}</td></tr>`;
   }).join('')}</tbody></table>`;
   el.querySelectorAll('tr[data-player-id]').forEach(row => {
     row.addEventListener('click', () => togglePlayerValueSelection(row.dataset.playerId));
@@ -3099,10 +3134,11 @@ function wireEvents() {
   $('exportDataBtn').addEventListener('click', exportData);
   $('playerValueSearch').addEventListener('input', renderPlayerValues);
   $('playerPositionFilter').addEventListener('change', renderPlayerValues);
-  $('buildPlayerCompareBtn').addEventListener('click', renderPlayerComparison);
-  $('swapPlayerCompareBtn').addEventListener('click', () => { const a = $('playerCompareA').value; $('playerCompareA').value = $('playerCompareB').value; $('playerCompareB').value = a; renderPlayerComparison(); renderPlayerValues(); });
+  if ($('buildPlayerCompareBtn')) $('buildPlayerCompareBtn').addEventListener('click', renderPlayerComparison);
+  if ($('swapPlayerCompareBtn')) $('swapPlayerCompareBtn').addEventListener('click', () => { const a = $('playerCompareA').value; $('playerCompareA').value = $('playerCompareB').value; $('playerCompareB').value = a; renderPlayerComparison(); renderPlayerValues(); });
   $('clearPlayerCompareBtn').addEventListener('click', () => { $('playerCompareA').value = ''; $('playerCompareB').value = ''; renderPlayerComparison(); renderPlayerValues(); });
   ['playerCompareA', 'playerCompareB'].forEach(id => {
+    if (!$(id)) return;
     $(id).addEventListener('keydown', event => { if (event.key === 'Enter') { renderPlayerComparison(); renderPlayerValues(); } });
     $(id).addEventListener('change', () => { renderPlayerComparison(); renderPlayerValues(); });
   });

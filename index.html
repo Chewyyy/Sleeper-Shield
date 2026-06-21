@@ -169,7 +169,7 @@
 
       <section id="players" class="tab-panel">
         <section class="panel player-lab">
-          <div class="form-grid player-controls">
+          <div class="form-grid player-controls player-toolbar-controls">
             <label>League
               <select id="playerLeagueSelect"></select>
             </label>
@@ -178,19 +178,19 @@
                 <option value="auto">Best available</option>
               </select>
             </label>
-            <label>Player A
-              <input id="playerCompareA" list="playerOptions" placeholder="Search first player" />
-            </label>
-            <label>Player B
-              <input id="playerCompareB" list="playerOptions" placeholder="Search second player" />
-            </label>
           </div>
-          <div class="button-row">
-            <button id="buildPlayerCompareBtn" class="primary">Build cards</button>
-            <button id="swapPlayerCompareBtn" class="secondary">Swap</button>
-            <button id="clearPlayerCompareBtn" class="ghost">Clear</button>
+          <input id="playerCompareA" type="hidden" />
+          <input id="playerCompareB" type="hidden" />
+          <p class="hint">Tap players in the value table below. First tap selects Player 1, second tap selects Player 2.</p>
+        </section>
+
+        <section class="panel compare-selection-panel">
+          <div class="panel-heading-row compact-heading">
+            <h3>Compare players</h3>
+            <button id="clearPlayerCompareBtn" class="ghost small-button">Clear</button>
           </div>
-          <p class="hint">Simple player cards for quick comparison.</p>
+          <div id="compareSelectionSlots" class="compare-selection-slots"></div>
+          <p class="hint">Tap a selected player again to unselect them. New players only fill an open slot.</p>
         </section>
 
         <section id="playerCompareOutput" class="player-compare-output"></section>
@@ -209,7 +209,7 @@
               </select>
             </label>
           </div>
-          <p class="hint">Click a player once to fill Player A, click a second player to fill Player B. Click a selected row again to unselect it.</p>
+          <p class="hint">Tap any row to select. Once two players are selected, tap one of the selected rows or slots to remove it before picking another.</p>
           <div id="playerValuesTable" class="table-wrap"></div>
         </section>
       </section>

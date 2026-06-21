@@ -27,6 +27,7 @@ http://localhost:5173
 - Trade evaluation includes player stat cards using the most recent played seasons, avoiding unplayed future weeks.
 - Draft-pick values now use a KTC-style 0–10,000 value scale and estimate early/mid/late value from the original owner's roster strength.
 - Player values now use a KTC-style dynasty-market model: market/tier anchor first, then controlled adjustments for production, recent form, positional percentile, rushing upside, age, status, league format, and team need.
+- Player value table uses tap-to-compare selection: first tap fills Player 1, second tap fills Player 2, and selected rows/slots must be tapped again to unselect before replacing them.
 - QB values are tier-guarded, so a stat-efficient QB like Brock Purdy cannot leapfrog Drake Maye/Josh Allen/Lamar-type assets solely because of PPG or efficiency.
 - Recap generator creates week/month/season/offseason league packages to paste into ChatGPT.
 - Draft recap generator summarizes draft classes, top picks, current model value from drafted players, draft-day trades, and traded future picks.
