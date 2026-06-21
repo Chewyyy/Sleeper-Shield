@@ -3081,6 +3081,7 @@ function renderEverything() {
   renderTables();
   renderAssetList('A');
   renderAssetList('B');
+  syncMobileBottomNav();
 }
 
 function wireEvents() {
@@ -3165,6 +3166,41 @@ function wireEvents() {
   });
 }
 
+
+function syncMobileBottomNav() {
+  const nav = document.querySelector('.topbar');
+  if (!nav) return;
+  const isMobile = window.matchMedia('(max-width: 760px)').matches;
+  const root = document.documentElement;
+  if (!isMobile) {
+    root.style.removeProperty('--mobile-nav-bottom');
+    root.style.removeProperty('--mobile-nav-height');
+    return;
+  }
+
+  const viewport = window.visualViewport;
+  const browserChromeOffset = viewport
+    ? Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop)
+    : 0;
+
+  root.style.setProperty('--mobile-nav-bottom', `${Math.round(browserChromeOffset)}px`);
+
+  window.requestAnimationFrame(() => {
+    const navHeight = Math.ceil(nav.getBoundingClientRect().height || 78);
+    root.style.setProperty('--mobile-nav-height', `${navHeight + Math.round(browserChromeOffset) + 18}px`);
+  });
+}
+
+function wireMobileBottomNav() {
+  syncMobileBottomNav();
+  window.addEventListener('resize', syncMobileBottomNav, { passive: true });
+  window.addEventListener('orientationchange', () => setTimeout(syncMobileBottomNav, 80), { passive: true });
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', syncMobileBottomNav, { passive: true });
+    window.visualViewport.addEventListener('scroll', syncMobileBottomNav, { passive: true });
+  }
+}
+
 function applySettingsToUI() {
   for (const [key, value] of Object.entries(state.settings)) {
     if ($(key)) {
@@ -3176,6 +3212,7 @@ function applySettingsToUI() {
 
 async function boot() {
   wireEvents();
+  wireMobileBottomNav();
   applySettingsToUI();
   saveLeagueIds(state.savedLeagueIds);
   renderEverything();
