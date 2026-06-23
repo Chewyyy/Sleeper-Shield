@@ -2,15 +2,8 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#050607" />
-  <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <meta name="apple-mobile-web-app-title" content="Trade Shield" />
-  <meta name="mobile-web-app-capable" content="yes" />
-  <link rel="manifest" href="manifest.webmanifest" />
-  <link rel="apple-touch-icon" href="apple-touch-icon.png" />
-  <title>Trade Shield</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sleeper Trade Shield</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -19,52 +12,61 @@
       <div class="brand">
         <div class="brand-mark">STS</div>
         <div>
-          <h1>Trade Shield</h1>
+          <h1>Sleeper Trade Shield</h1>
+          <p>Multi-league trade valuation and league recap generator.</p>
         </div>
       </div>
 
-      <section class="intro-copy" aria-label="App introduction">
-        <h2>Check a trade before you accept it.</h2>
-        <p>Load your leagues, compare players and picks, and generate clean recap packets you can paste into ChatGPT.</p>
+      <section class="panel compact">
+        <label for="leagueIds">Sleeper league IDs</label>
+        <textarea id="leagueIds" rows="5" placeholder="Paste one or more league IDs, separated by commas or new lines"></textarea>
+        <div class="button-row">
+          <button id="loadLeaguesBtn" class="primary">Load leagues</button>
+          <button id="clearBtn" class="ghost">Clear</button>
+        </div>
+        <p class="hint">No Sleeper login is required. League data is public/read-only through Sleeper’s API.</p>
       </section>
 
+      <section class="panel compact">
+        <div class="section-title">Loaded leagues</div>
+        <div id="loadedLeagues" class="league-list empty">No leagues loaded.</div>
+      </section>
+
+      <section class="panel compact">
+        <div class="section-title">Data status</div>
+        <div id="statusLog" class="status-log">Ready.</div>
+      </section>
     </aside>
 
     <main class="main">
       <header class="topbar">
         <nav class="tabs" aria-label="Primary">
-          <button class="tab active" data-tab="dashboard" data-short="Home">Home</button>
-          <button class="tab" data-tab="trade" data-short="Trade">Trade</button>
-          <button class="tab" data-tab="recaps" data-short="Recap">Recaps</button>
-          <button class="tab" data-tab="players" data-short="Players">Players</button>
-          <button class="tab" data-tab="settings" data-short="Model">Model</button>
+          <button class="tab active" data-tab="dashboard">Dashboard</button>
+          <button class="tab" data-tab="trade">Trade Analyzer</button>
+          <button class="tab" data-tab="recaps">Recap Builder</button>
+          <button class="tab" data-tab="players">Player Values</button>
+          <button class="tab" data-tab="settings">Settings</button>
         </nav>
-        <button id="exportDataBtn" class="secondary export-btn">Export</button>
+        <button id="exportDataBtn" class="secondary">Export data</button>
       </header>
 
       <section id="dashboard" class="tab-panel active">
-        <div class="grid two home-league-grid">
-          <section class="panel compact">
-            <label for="leagueIdInput">Add league ID</label>
-            <div class="league-add-row">
-              <input id="leagueIdInput" inputmode="numeric" placeholder="Sleeper league ID" />
-              <button id="addLeagueIdBtn" class="primary">Add</button>
-            </div>
-            <div class="button-row single-action">
-              <button id="clearBtn" class="ghost">Clear saved leagues</button>
-            </div>
-            <p class="hint">Saved leagues load automatically on this device. Public Sleeper data only. No login required.</p>
-          </section>
-
-          <section class="panel compact">
-            <div class="section-title">Leagues</div>
-            <div id="loadedLeagues" class="league-list empty">No leagues loaded.</div>
-          </section>
+        <div class="hero panel">
+          <div>
+            <h2>Fantasy trade protection, tuned to each Sleeper league.</h2>
+            <p>Load one or more league IDs, then compare players and picks using league scoring, roster format, actual matchup production, age, positional scarcity, team needs, and draft-pick context.</p>
+          </div>
+          <div class="hero-grid">
+            <div class="metric"><span id="metricLeagues">0</span><small>Leagues</small></div>
+            <div class="metric"><span id="metricTeams">0</span><small>Teams</small></div>
+            <div class="metric"><span id="metricPlayers">0</span><small>Players cached</small></div>
+            <div class="metric"><span id="metricWeeks">0</span><small>Weeks loaded</small></div>
+          </div>
         </div>
 
         <div class="grid two">
           <section class="panel">
-            <h3>Standings</h3>
+            <h3>League standings</h3>
             <select id="dashboardLeagueSelect"></select>
             <div id="standingsTable" class="table-wrap"></div>
           </section>
@@ -73,65 +75,61 @@
             <div id="strengthTable" class="table-wrap"></div>
           </section>
         </div>
-
-        <section class="panel">
-          <div class="panel-heading-row">
-            <h3>League rules</h3>
-            <select id="rulesLeagueSelect"></select>
-          </div>
-          <div id="leagueRulesPanel" class="rules-panel empty">Load a league to view format and scoring rules.</div>
-        </section>
       </section>
 
       <section id="trade" class="tab-panel">
         <div class="panel">
-          <div class="form-grid trade-team-grid">
+          <div class="form-grid">
             <label>League
               <select id="tradeLeagueSelect"></select>
             </label>
-            <div class="team-select-block">
-              <label>Team A
-                <select id="teamASelect"></select>
-              </label>
-              <p id="teamANeedsNote" class="team-need-note">Load a league to see roster needs.</p>
-            </div>
-            <div class="team-select-block">
-              <label>Team B
-                <select id="teamBSelect"></select>
-              </label>
-              <p id="teamBNeedsNote" class="team-need-note">Load a league to see roster needs.</p>
-            </div>
+            <label>Team A
+              <select id="teamASelect"></select>
+            </label>
+            <label>Team B
+              <select id="teamBSelect"></select>
+            </label>
           </div>
         </div>
 
         <div class="grid two">
           <section class="panel asset-panel">
-            <h3>Team A sends</h3>
+            <h3>Team A gives</h3>
             <div class="asset-controls">
-              <select id="teamAPlayerSelect"></select>
-              <button id="teamAAddPlayer" class="secondary">Add asset</button>
+              <input id="teamAPlayerSearch" list="playerOptions" placeholder="Search player name" />
+              <button id="teamAAddPlayer" class="secondary">Add player</button>
             </div>
-            <input id="teamAPlayerSearch" list="playerOptions" placeholder="Or search any player" />
+            <div class="pick-controls">
+              <select id="teamAPickSeason"></select>
+              <select id="teamAPickRound"></select>
+              <select id="teamAPickOriginal"></select>
+              <button id="teamAAddPick" class="secondary">Add pick</button>
+            </div>
             <div id="teamAAssets" class="asset-list empty">No assets selected.</div>
           </section>
 
           <section class="panel asset-panel">
-            <h3>Team B sends</h3>
+            <h3>Team B gives</h3>
             <div class="asset-controls">
-              <select id="teamBPlayerSelect"></select>
-              <button id="teamBAddPlayer" class="secondary">Add asset</button>
+              <input id="teamBPlayerSearch" list="playerOptions" placeholder="Search player name" />
+              <button id="teamBAddPlayer" class="secondary">Add player</button>
             </div>
-            <input id="teamBPlayerSearch" list="playerOptions" placeholder="Or search any player" />
+            <div class="pick-controls">
+              <select id="teamBPickSeason"></select>
+              <select id="teamBPickRound"></select>
+              <select id="teamBPickOriginal"></select>
+              <button id="teamBAddPick" class="secondary">Add pick</button>
+            </div>
             <div id="teamBAssets" class="asset-list empty">No assets selected.</div>
           </section>
         </div>
 
         <section class="panel">
           <div class="button-row spaced">
-            <button id="evaluateTradeBtn" class="primary">Evaluate</button>
-            <button id="resetTradeBtn" class="ghost">Reset</button>
+            <button id="evaluateTradeBtn" class="primary">Evaluate trade</button>
+            <button id="resetTradeBtn" class="ghost">Reset trade</button>
           </div>
-          <div id="tradeResult" class="trade-result empty">Add both sides of the deal, then evaluate.</div>
+          <div id="tradeResult" class="trade-result empty">Choose teams and assets, then evaluate.</div>
         </section>
       </section>
 
@@ -149,56 +147,25 @@
                 <option value="week">Selected week</option>
                 <option value="month">Last 4 loaded weeks</option>
                 <option value="season">Season to date</option>
-                <option value="offseason">Offseason recap</option>
-                <option value="draft">Draft recap + draft trades</option>
               </select>
             </label>
           </div>
-          <div class="button-row recap-buttons">
-            <button id="generateWeekRecapBtn" class="primary">This week</button>
-            <button id="generateMonthRecapBtn" class="secondary">This month</button>
-            <button id="generateSeasonRecapBtn" class="secondary">This season</button>
-            <button id="generateOffseasonRecapBtn" class="secondary">Offseason</button>
-            <button id="generateDraftRecapBtn" class="secondary">Draft recap</button>
-            <button id="copyRecapBtn" class="ghost">Copy recap</button>
+          <div class="button-row">
+            <button id="generateRecapBtn" class="primary">Generate recap text</button>
+            <button id="copyRecapBtn" class="secondary">Copy recap</button>
           </div>
-          <p class="hint">Structured for easy pasting into ChatGPT.</p>
-          <textarea id="recapOutput" class="output" rows="22" placeholder="Generated recap package..."></textarea>
+          <p class="hint">The output is intentionally structured so you can paste it into ChatGPT for a stronger written league recap.</p>
+          <textarea id="recapOutput" class="output" rows="22" placeholder="Your generated recap package will appear here..."></textarea>
         </section>
       </section>
 
       <section id="players" class="tab-panel">
-        <section class="panel player-lab">
-          <div class="form-grid player-controls player-toolbar-controls">
+        <section class="panel">
+          <div class="form-grid player-controls">
             <label>League
               <select id="playerLeagueSelect"></select>
             </label>
-            <label>Stats season
-              <select id="playerStatsSeasonSelect">
-                <option value="auto">Best available</option>
-              </select>
-            </label>
-          </div>
-          <input id="playerCompareA" type="hidden" />
-          <input id="playerCompareB" type="hidden" />
-          <p class="hint">Tap players in the value table below. First tap selects Player 1, second tap selects Player 2.</p>
-        </section>
-
-        <section class="panel compare-selection-panel">
-          <div class="panel-heading-row compact-heading">
-            <h3>Compare players</h3>
-            <button id="clearPlayerCompareBtn" class="ghost small-button">Clear</button>
-          </div>
-          <div id="compareSelectionSlots" class="compare-selection-slots"></div>
-          <p class="hint">Tap a selected player again to unselect them. New players only fill an open slot.</p>
-        </section>
-
-        <section id="playerCompareOutput" class="player-compare-output"></section>
-
-        <section class="panel">
-          <h3>Player values</h3>
-          <div class="form-grid player-controls compact-controls">
-            <label>Search table
+            <label>Search
               <input id="playerValueSearch" placeholder="Player name, team, or position" />
             </label>
             <label>Position
@@ -209,14 +176,13 @@
               </select>
             </label>
           </div>
-          <p class="hint">Tap any row to select. Once two players are selected, tap one of the selected rows or slots to remove it before picking another.</p>
           <div id="playerValuesTable" class="table-wrap"></div>
         </section>
       </section>
 
       <section id="settings" class="tab-panel">
         <section class="panel">
-          <h3>Model settings</h3>
+          <h3>Value model settings</h3>
           <div class="settings-grid">
             <label>Age/dynasty weight
               <input id="ageWeight" type="range" min="0" max="2" step="0.1" value="1" />
@@ -242,10 +208,10 @@
         </section>
 
         <section class="panel">
-          <h3>How it works</h3>
+          <h3>How the model works</h3>
           <div class="model-copy">
-            <p><strong>Player value</strong> uses a KTC-style 0–10,000 dynasty scale: market/tier anchor first, then controlled adjustments for league scoring, production, recent form, positional scarcity, age curve, health/status, and roster format.</p>
-            <p><strong>Draft pick value</strong> uses the same KTC-style value scale, applies year discount, then adjusts based on the original roster’s strength so a likely early 1st is worth more than a likely late 1st.</p>
+            <p><strong>Player value</strong> blends league-specific fantasy output, recent form, positional scarcity, age curve, health/status, start rate, and roster format.</p>
+            <p><strong>Draft pick value</strong> starts with round value, applies year discount, then adjusts based on the original roster’s strength so a likely early 1st is worth more than a likely late 1st.</p>
             <p><strong>Trade fairness</strong> compares raw value and then adjusts for how each side’s positional needs change after the deal.</p>
             <p><strong>Limitations:</strong> this does not know private trade talks, player news context, contract leagues, or off-platform draft capital. Use it as a decision aid, not a final authority.</p>
           </div>

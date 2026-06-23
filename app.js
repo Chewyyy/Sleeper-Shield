@@ -23,6 +23,21 @@ const FLEX_SLOTS = new Set(['FLEX', 'REC_FLEX', 'WRRB_FLEX', 'WRT', 'RB_WR_TE'])
 const SUPER_FLEX_SLOTS = new Set(['SUPER_FLEX', 'SUPERFLEX', 'OP']);
 const IDP_FLEX_SLOTS = new Set(['IDP_FLEX', 'DL_LB_DB']);
 const RECENT_GAME_COUNT = 5;
+const DRAFT_PICK_LOOKAHEAD_YEARS = 3;
+
+const POSITION_AGE_CURVES = {
+  // Approximate dynasty curve by fantasy position. Retirement age is an actuarial/value cliff, not a prediction for a specific player.
+  QB: { primeStart: 24, primeEnd: 31, declineStart: 34, retirement: 38, youngBonus: 580, primeBonus: 260, maxPenalty: -1500 },
+  RB: { primeStart: 22, primeEnd: 25, declineStart: 27, retirement: 30, youngBonus: 720, primeBonus: 220, maxPenalty: -1900 },
+  WR: { primeStart: 23, primeEnd: 28, declineStart: 31, retirement: 34, youngBonus: 620, primeBonus: 220, maxPenalty: -1450 },
+  TE: { primeStart: 24, primeEnd: 30, declineStart: 32, retirement: 35, youngBonus: 440, primeBonus: 180, maxPenalty: -1100 },
+  DL: { primeStart: 24, primeEnd: 29, declineStart: 31, retirement: 34, youngBonus: 240, primeBonus: 90, maxPenalty: -650 },
+  LB: { primeStart: 24, primeEnd: 29, declineStart: 31, retirement: 33, youngBonus: 260, primeBonus: 90, maxPenalty: -750 },
+  DB: { primeStart: 24, primeEnd: 29, declineStart: 31, retirement: 34, youngBonus: 240, primeBonus: 90, maxPenalty: -650 },
+  K: { primeStart: 25, primeEnd: 35, declineStart: 38, retirement: 42, youngBonus: 40, primeBonus: 20, maxPenalty: -160 },
+  DEF: { primeStart: 0, primeEnd: 99, declineStart: 99, retirement: 99, youngBonus: 0, primeBonus: 0, maxPenalty: 0 },
+  UNK: { primeStart: 23, primeEnd: 28, declineStart: 31, retirement: 34, youngBonus: 240, primeBonus: 80, maxPenalty: -700 }
+};
 
 
 // KTC-style dynasty market anchors. These are intentionally offline, approximate anchors, not a live KTC scrape.
@@ -875,18 +890,63 @@ function recentAdjustmentValue(rec) {
   return clampNumber((last5 - ppg) * 65, -350, 350) * state.settings.recentWeight;
 }
 
+function ageCurveProfile(player, league) {
+  const pos = player?.position || 'UNK';
+  const curve = POSITION_AGE_CURVES[pos] || POSITION_AGE_CURVES.UNK;
+  const age = safeNumber(player?.age, 0);
+  if (!age || !isDynastyLeague(league)) {
+    return {
+      adjustment: 0,
+      stage: 'unknown',
+      yearsToRetirement: null,
+      curve
+    };
+  }
+
+  const yearsToRetirement = roundNum(curve.retirement - age, 1);
+  let adjustment = 0;
+  let stage = 'prime';
+
+  if (age < curve.primeStart) {
+    const runway = curve.primeStart - age;
+    const productionProof = 1 + Math.min(0.28, safeNumber(player.search_rank, 9999) <= 150 ? 0.16 : 0);
+    adjustment = curve.youngBonus + runway * 80;
+    adjustment *= productionProof;
+    stage = 'ascending';
+  } else if (age <= curve.primeEnd) {
+    adjustment = curve.primeBonus;
+    stage = 'prime';
+  } else if (age < curve.declineStart) {
+    const drift = age - curve.primeEnd;
+    adjustment = Math.max(-180, curve.primeBonus - drift * 180);
+    stage = 'late-prime';
+  } else if (age < curve.retirement) {
+    const declineWindow = Math.max(1, curve.retirement - curve.declineStart);
+    const declinePct = clampNumber((age - curve.declineStart) / declineWindow, 0, 1);
+    adjustment = curve.maxPenalty * declinePct;
+    stage = 'decline';
+  } else {
+    adjustment = curve.maxPenalty;
+    stage = 'cliff-risk';
+  }
+
+  // Position-specific dynasty guardrails. RBs fall off fastest, QBs retain value longest.
+  if (pos === 'RB' && age >= 27) adjustment -= (age - 26) * 220;
+  if (pos === 'WR' && age >= 30) adjustment -= (age - 29) * 140;
+  if (pos === 'TE' && age >= 32) adjustment -= (age - 31) * 120;
+  if (pos === 'QB' && age <= 25) adjustment += 180;
+  if (pos === 'QB' && age >= 35) adjustment -= (age - 34) * 220;
+
+  return {
+    adjustment: roundNum(adjustment * state.settings.ageWeight, 0),
+    stage,
+    yearsToRetirement,
+    curve
+  };
+}
+
 function dynastyAgeAdjustmentValue(player, league) {
-  if (!player || !isDynastyLeague(league)) return 0;
-  const age = safeNumber(player.age, 0);
-  if (!age) return 0;
-  const pos = player.position || 'UNK';
-  let adj = 0;
-  if (pos === 'QB') adj = age <= 24 ? 520 : age <= 28 ? 360 : age <= 32 ? 150 : age <= 36 ? -250 : -900;
-  else if (pos === 'RB') adj = age <= 23 ? 620 : age <= 25 ? 250 : age <= 27 ? -150 : age <= 29 ? -700 : -1400;
-  else if (pos === 'WR') adj = age <= 24 ? 500 : age <= 27 ? 250 : age <= 30 ? -100 : -700;
-  else if (pos === 'TE') adj = age <= 25 ? 360 : age <= 29 ? 160 : age <= 32 ? -160 : -650;
-  else if (['DL', 'LB', 'DB'].includes(pos)) adj = age <= 27 ? 180 : age <= 31 ? 40 : -280;
-  return adj * state.settings.ageWeight;
+  return ageCurveProfile(player, league).adjustment;
 }
 
 function statusAdjustmentValue(player) {
@@ -921,7 +981,8 @@ function qbValueDetail(league, playerId, player, rec, percentile) {
   const percentileAdj = positionPercentileAdjustmentValue(percentile, 'QB') * 0.45;
   const recentAdj = recentAdjustmentValue(rec) * 0.45;
   const rushingAdj = qbRushingAdjustment(rec);
-  const dynastyAdj = dynastyAgeAdjustmentValue(player, league) * 0.55;
+  const ageProfile = ageCurveProfile(player, league);
+  const dynastyAdj = ageProfile.adjustment * 0.55;
   const statusAdj = statusAdjustmentValue(player);
   const scarcityAdj = scarcityAdjustmentValue(league, playerId) * 0.25;
   const uncapped = anchor + productionAdj + percentileAdj + recentAdj + rushingAdj + dynastyAdj + statusAdj + scarcityAdj;
@@ -939,6 +1000,9 @@ function qbValueDetail(league, playerId, player, rec, percentile) {
       recentAdj: roundNum(recentAdj, 0),
       rushingAdj: roundNum(rushingAdj, 0),
       dynastyAdj: roundNum(dynastyAdj, 0),
+      ageStage: ageProfile.stage,
+      yearsToRetirement: ageProfile.yearsToRetirement,
+      expectedPositionRetirement: ageProfile.curve?.retirement || null,
       scarcityAdj: roundNum(scarcityAdj, 0),
       statusAdj: roundNum(statusAdj, 0),
       banded: roundNum(banded, 0)
@@ -952,7 +1016,8 @@ function ktcStyleValueDetail(league, playerId, player, rec, percentile) {
   const productionAdj = productionAdjustmentValue(rec, pos);
   const percentileAdj = positionPercentileAdjustmentValue(percentile, pos);
   const recentAdj = recentAdjustmentValue(rec);
-  const dynastyAdj = dynastyAgeAdjustmentValue(player, league);
+  const ageProfile = ageCurveProfile(player, league);
+  const dynastyAdj = ageProfile.adjustment;
   const statusAdj = statusAdjustmentValue(player);
   const scarcityAdj = scarcityAdjustmentValue(league, playerId);
   const uncapped = anchor + productionAdj + percentileAdj + recentAdj + dynastyAdj + statusAdj + scarcityAdj;
@@ -967,6 +1032,9 @@ function ktcStyleValueDetail(league, playerId, player, rec, percentile) {
       percentileAdj: roundNum(percentileAdj, 0),
       recentAdj: roundNum(recentAdj, 0),
       dynastyAdj: roundNum(dynastyAdj, 0),
+      ageStage: ageProfile.stage,
+      yearsToRetirement: ageProfile.yearsToRetirement,
+      expectedPositionRetirement: ageProfile.curve?.retirement || null,
       scarcityAdj: roundNum(scarcityAdj, 0),
       statusAdj: roundNum(statusAdj, 0),
       banded: roundNum(banded, 0)
@@ -1474,6 +1542,9 @@ function renderPlayerStatCard(league, playerId) {
   const rankText = `#${data.rank.rank} ${data.rank.position}`;
   const sourceLabel = data.rec.source === 'historical' ? `${data.rec.season === 'multi' ? 'Past 2 seasons' : data.rec.season}` : `${league.season || ''} league`;
   const matchupLabel = `${data.value.percentile}th pct · ${trend.text}`;
+  const ageProfile = ageCurveProfile(data.player, league);
+  const ageCurveTitle = isDynastyLeague(league) ? ageProfile.stage : 'N/A';
+  const ageCurveSubtitle = ageProfile.yearsToRetirement !== null ? `${ageProfile.yearsToRetirement}y runway` : 'Age Curve';
   return `
     <article class="player-card" data-player-card data-player-id="${escapeHtml(data.playerId)}" data-league-id="${escapeHtml(league.league_id)}">
       <div class="player-card-header">
@@ -1515,7 +1586,7 @@ function renderPlayerStatCard(league, playerId) {
           <div class="stat-tile"><strong>${data.value.percentile}</strong><span>Pos Pct</span></div>
           <div class="stat-tile"><strong>${data.rank.rank}/${data.rank.total}</strong><span>Value Rank</span></div>
           <div class="stat-tile"><strong>${escapeHtml(data.status || 'Active')}</strong><span>Status</span></div>
-          <div class="stat-tile"><strong>${roundNum(positionMultiplier(data.player, league), 2)}x</strong><span>Format Adj</span></div>
+          <div class="stat-tile"><strong>${escapeHtml(ageCurveTitle)}</strong><span>${escapeHtml(ageCurveSubtitle)}</span></div>
         </div>
       </div>
 
@@ -1627,10 +1698,11 @@ function renderTradeModelExplanation(league) {
       <p>The player values now use a KTC-style dynasty scale: market/tier anchor first, then controlled adjustments for league scoring, production, recent form, positional scarcity, age/status, rushing upside, and roster format.</p>
       <ul>
         <li><strong>Quarterbacks:</strong> QB value starts with an offline KTC-style market/tier anchor. Production, recent form, rushing upside, age, and superflex scarcity can move a QB within a capped band, but efficient PPG alone cannot push a lower-market QB above elite dynasty QBs.</li>
+        <li><strong>Dynasty age curve:</strong> if the league is dynasty, the model now uses position-specific prime windows, decline windows, approximate retirement cliffs, and younger-player future-value runway. RB age is penalized earlier; QBs keep value longer; WR/TE decline is smoothed.</li>
         <li><strong>Current year:</strong> league matchup data for ${escapeHtml(league.season || currentSeasonNumber(league))}, including PPG, total points, start rate, last-five-game trend, and positional percentile.</li>
         <li><strong>Previous years:</strong> best-effort historical stat fetches scored under this league's scoring rules. Loaded seasons: ${escapeHtml(seasons)}.</li>
         <li><strong>League format:</strong> ${escapeHtml(formatText)}.</li>
-        <li><strong>Draft picks:</strong> KTC-style round value, years until the pick conveys, and the original owner's projected roster strength to estimate early/mid/late pick value.</li>
+        <li><strong>Draft picks:</strong> KTC-style round value, years until the pick conveys, and the original owner's projected roster strength to estimate early/mid/late pick value. Current-season rookie picks show if that season's draft has not been completed yet.</li>
         <li><strong>Team needs:</strong> the app simulates each roster before and after the trade using starter slots, flex/superflex rules, and positional depth.</li>
       </ul>
     </section>`;
@@ -2290,12 +2362,83 @@ function fillTeamPlayerSelects() {
   renderTeamNeedNotes();
 }
 
+function draftSeasonNumber(draft, league) {
+  return Number(
+    draft?.season ||
+    draft?.metadata?.season ||
+    draft?.settings?.season ||
+    league?.season ||
+    currentSeasonNumber(league)
+  );
+}
+
+function draftForSeason(league, season) {
+  return (league?.drafts || []).filter(draft => Number(draftSeasonNumber(draft, league)) === Number(season));
+}
+
+function draftLooksComplete(league, draft) {
+  const status = String(draft?.status || '').toLowerCase();
+  if (['complete', 'completed'].includes(status)) return true;
+  const draftId = draft?.draft_id;
+  const picks = (league?.draftPicks || []).filter(pick => !draftId || String(pick.draft_id) === String(draftId));
+  const teams = safeNumber(league?.total_rosters || league?.rosters?.length, 0);
+  const rounds = safeNumber(draft?.settings?.rounds || league?.settings?.draft_rounds, 0);
+  return Boolean(teams && rounds && picks.length >= teams * rounds);
+}
+
+function shouldShowDraftPickSeason(league, season) {
+  const baseSeason = currentSeasonNumber(league);
+  if (Number(season) > Number(baseSeason)) return true;
+  if (Number(season) < Number(baseSeason)) return false;
+
+  const seasonDrafts = draftForSeason(league, season);
+  // Current-season rookie picks are tradeable before the draft. If there is no draft object yet, lean on league status.
+  if (!seasonDrafts.length) {
+    const status = String(league?.status || '').toLowerCase();
+    return !['in_season', 'complete', 'post_season'].includes(status);
+  }
+  return !seasonDrafts.some(draft => draftLooksComplete(league, draft));
+}
+
+function pickSeasonList(league) {
+  const baseSeason = currentSeasonNumber(league);
+  const seasons = [];
+  for (let offset = 0; offset <= DRAFT_PICK_LOOKAHEAD_YEARS; offset += 1) {
+    const season = baseSeason + offset;
+    if (shouldShowDraftPickSeason(league, season)) seasons.push(season);
+  }
+  return seasons;
+}
+
+function pickCurrentOwnerFromSleeper(traded = {}) {
+  return Number(
+    traded.owner_id ||
+    traded.new_owner_id ||
+    traded.current_owner_id ||
+    traded.currentOwnerId ||
+    traded.ownerRosterId ||
+    traded.owner_roster_id ||
+    0
+  );
+}
+
+function pickOriginalOwnerFromSleeper(traded = {}) {
+  return Number(
+    traded.roster_id ||
+    traded.original_roster_id ||
+    traded.originalRosterId ||
+    traded.previous_owner_id ||
+    traded.source_roster_id ||
+    0
+  );
+}
+
 function ownedPicksForRoster(league, ownerRosterId) {
   if (!league || !ownerRosterId) return [];
-  const baseSeason = currentSeasonNumber(league);
-  const seasons = [baseSeason + 1, baseSeason + 2, baseSeason + 3];
+  const seasons = pickSeasonList(league);
   const rounds = Array.from({ length: Math.max(1, Math.min(10, safeNumber(league.settings?.draft_rounds, 5))) }, (_, i) => i + 1);
   const picks = [];
+
   for (const season of seasons) {
     for (const roster of league.rosters || []) {
       for (const round of rounds) {
@@ -2313,11 +2456,21 @@ function ownedPicksForRoster(league, ownerRosterId) {
   for (const traded of league.tradedPicks || []) {
     const season = Number(traded.season);
     const round = Number(traded.round);
-    const originalRosterId = Number(traded.roster_id || traded.original_roster_id || traded.originalRosterId);
-    const currentOwnerId = Number(traded.owner_id || traded.new_owner_id || traded.ownerRosterId || traded.owner_roster_id);
+    const originalRosterId = pickOriginalOwnerFromSleeper(traded);
+    const currentOwnerId = pickCurrentOwnerFromSleeper(traded);
     if (!season || !round || !originalRosterId || !currentOwnerId) continue;
+    if (!seasons.includes(season)) continue;
     const row = picks.find(pick => Number(pick.season) === season && Number(pick.round) === round && Number(pick.originalRosterId) === originalRosterId);
     if (row) row.currentOwnerId = currentOwnerId;
+    else {
+      picks.push({
+        type: 'pick',
+        season,
+        round,
+        originalRosterId,
+        currentOwnerId
+      });
+    }
   }
 
   return picks
@@ -3081,7 +3234,6 @@ function renderEverything() {
   renderTables();
   renderAssetList('A');
   renderAssetList('B');
-  syncMobileBottomNav();
 }
 
 function wireEvents() {
@@ -3166,41 +3318,6 @@ function wireEvents() {
   });
 }
 
-
-function syncMobileBottomNav() {
-  const nav = document.querySelector('.topbar');
-  if (!nav) return;
-  const isMobile = window.matchMedia('(max-width: 760px)').matches;
-  const root = document.documentElement;
-  if (!isMobile) {
-    root.style.removeProperty('--mobile-nav-bottom');
-    root.style.removeProperty('--mobile-nav-height');
-    return;
-  }
-
-  const viewport = window.visualViewport;
-  const browserChromeOffset = viewport
-    ? Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop)
-    : 0;
-
-  root.style.setProperty('--mobile-nav-bottom', `${Math.round(browserChromeOffset)}px`);
-
-  window.requestAnimationFrame(() => {
-    const navHeight = Math.ceil(nav.getBoundingClientRect().height || 78);
-    root.style.setProperty('--mobile-nav-height', `${navHeight + Math.round(browserChromeOffset) + 18}px`);
-  });
-}
-
-function wireMobileBottomNav() {
-  syncMobileBottomNav();
-  window.addEventListener('resize', syncMobileBottomNav, { passive: true });
-  window.addEventListener('orientationchange', () => setTimeout(syncMobileBottomNav, 80), { passive: true });
-  if (window.visualViewport) {
-    window.visualViewport.addEventListener('resize', syncMobileBottomNav, { passive: true });
-    window.visualViewport.addEventListener('scroll', syncMobileBottomNav, { passive: true });
-  }
-}
-
 function applySettingsToUI() {
   for (const [key, value] of Object.entries(state.settings)) {
     if ($(key)) {
@@ -3212,7 +3329,6 @@ function applySettingsToUI() {
 
 async function boot() {
   wireEvents();
-  wireMobileBottomNav();
   applySettingsToUI();
   saveLeagueIds(state.savedLeagueIds);
   renderEverything();

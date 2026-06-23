@@ -32,17 +32,13 @@
 * { box-sizing: border-box; }
 html {
   min-height: 100%;
-  width: 100%;
-  overflow-x: hidden;
   background: var(--bg);
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
 }
 body {
   margin: 0;
-  width: 100%;
   min-height: 100svh;
-  overflow-x: hidden;
   background:
     radial-gradient(circle at 16% -8%, rgba(10, 132, 255, 0.16), transparent 32rem),
     radial-gradient(circle at 92% 0%, rgba(53, 208, 127, 0.09), transparent 28rem),
@@ -543,9 +539,9 @@ input[type="range"] { min-height: 28px; padding: 0; accent-color: var(--accent-s
     display: flex;
     flex-direction: column;
     width: 100%;
-    min-height: 100dvh;
+    min-height: 100svh;
     gap: 10px;
-    padding: calc(12px + var(--safe-top)) 12px calc(var(--mobile-nav-height, 92px) + 18px + var(--safe-bottom));
+    padding: calc(12px + var(--safe-top)) 12px calc(104px + var(--safe-bottom));
   }
   .sidebar, .main { width: 100%; min-width: 0; }
   .brand {
@@ -571,29 +567,24 @@ input[type="range"] { min-height: 28px; padding: 0; accent-color: var(--accent-s
   .panel.compact { padding: 14px; border-radius: 20px; }
   .topbar {
     position: fixed;
-    left: 10px;
-    right: 10px;
-    bottom: calc(var(--mobile-nav-bottom, 0px) + 8px);
+    left: 0;
+    right: 0;
+    bottom: 0;
     top: auto;
-    z-index: 80;
-    width: auto;
-    max-width: none;
+    z-index: 50;
     margin: 0;
-    padding: 8px;
-    border-radius: 28px;
+    padding: 8px 10px calc(8px + var(--safe-bottom));
+    border-radius: 26px 26px 0 0;
     border: 1px solid var(--line);
-    background: rgba(12, 15, 23, 0.90);
-    box-shadow: 0 -12px 38px rgba(0,0,0,0.45);
-    transform: translateZ(0);
-    will-change: bottom;
+    border-bottom: 0;
+    background: rgba(12, 15, 23, 0.82);
+    box-shadow: 0 -16px 44px rgba(0,0,0,0.38);
   }
   .tabs {
     display: grid;
     grid-template-columns: repeat(5, minmax(0, 1fr));
     width: 100%;
-    min-width: 0;
     gap: 4px;
-    overflow: visible;
   }
   .tab {
     display: grid;
@@ -614,16 +605,15 @@ input[type="range"] { min-height: 28px; padding: 0; accent-color: var(--accent-s
   .tab[data-tab="settings"]::before { content: "⚙"; }
   .tab.active { background: var(--accent-soft); color: #dcecff; }
   #exportDataBtn {
-    position: fixed !important;
-    top: calc(12px + var(--safe-top)) !important;
-    right: 12px !important;
-    bottom: auto !important;
-    z-index: 90;
+    position: fixed;
+    top: calc(10px + var(--safe-top));
+    right: 12px;
+    z-index: 60;
     min-height: 36px;
     padding: 7px 11px;
     font-size: 0.78rem;
     border-radius: 999px;
-    background: rgba(25,29,40,0.88);
+    background: rgba(25,29,40,0.84);
     backdrop-filter: blur(18px) saturate(150%);
     -webkit-backdrop-filter: blur(18px) saturate(150%);
   }
