@@ -15,7 +15,8 @@ Then open `http://localhost:5173`.
 - Uses Sleeper public/read-only API data.
 - League IDs save locally in the browser and auto-load on the device.
 - Trade dropdowns include rostered players and owned draft picks, including current-year rookie picks when the draft has not been completed.
-- Player values use format-specific Sleeper ADP, league-scored projections, value over replacement, verified production, opportunity-adjusted efficiency, and position-specific dynasty age curves.
+- Player values use format-specific Sleeper ADP, league-scored projections, value over replacement, verified production, opportunity-adjusted efficiency, and dynasty-only player age/career-horizon curves.
+- Dynasty views show each player's age, age-curve stage, and estimated years to a position-specific retirement horizon. Redraft values and views exclude the age/horizon layer.
 - Trade evaluation applies elite-asset scarcity and package consolidation before showing each team's separate projected lineup/depth impact.
 - Trade analysis updates automatically whenever a team, player, pick, or model setting changes.
 - Pick values use continuous early/mid/late bands, original-roster strength, format, and a future-year discount.

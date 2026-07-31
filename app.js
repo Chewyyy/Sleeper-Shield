@@ -47,7 +47,7 @@ const RECENT_GAME_COUNT = 5;
 const DRAFT_PICK_LOOKAHEAD_YEARS = 3;
 
 const POSITION_AGE_CURVES = {
-  // Approximate dynasty curve by fantasy position. Retirement age is an actuarial/value cliff, not a prediction for a specific player.
+  // Approximate dynasty curve by fantasy position. The horizon is a planning estimate, not a player-specific retirement prediction.
   QB: { primeStart: 24, primeEnd: 31, declineStart: 34, retirement: 38, youngBonus: 580, primeBonus: 260, maxPenalty: -1500 },
   RB: { primeStart: 22, primeEnd: 25, declineStart: 27, retirement: 30, youngBonus: 720, primeBonus: 220, maxPenalty: -1900 },
   WR: { primeStart: 23, primeEnd: 28, declineStart: 31, retirement: 34, youngBonus: 620, primeBonus: 220, maxPenalty: -1450 },
@@ -58,6 +58,15 @@ const POSITION_AGE_CURVES = {
   K: { primeStart: 25, primeEnd: 35, declineStart: 38, retirement: 42, youngBonus: 40, primeBonus: 20, maxPenalty: -160 },
   DEF: { primeStart: 0, primeEnd: 99, declineStart: 99, retirement: 99, youngBonus: 0, primeBonus: 0, maxPenalty: 0 },
   UNK: { primeStart: 23, primeEnd: 28, declineStart: 31, retirement: 34, youngBonus: 240, primeBonus: 80, maxPenalty: -700 }
+};
+
+const AGE_STAGE_LABELS = {
+  ascending: 'Ascending',
+  prime: 'Prime',
+  'late-prime': 'Late prime',
+  decline: 'Decline window',
+  'cliff-risk': 'Horizon risk',
+  unknown: 'Age unavailable'
 };
 
 
@@ -1106,16 +1115,21 @@ function ageCurveProfile(player, league) {
   const pos = normalizePosition(player?.position || 'UNK');
   const curve = POSITION_AGE_CURVES[pos] || POSITION_AGE_CURVES.UNK;
   const age = safeNumber(player?.age, 0);
-  if (!age || !isDynastyLeague(league)) {
+  const applicable = isDynastyLeague(league) && pos !== 'DEF';
+  if (!applicable || !age) {
     return {
       adjustment: 0,
       stage: 'unknown',
       yearsToRetirement: null,
+      retirementAge: applicable ? curve.retirement : null,
+      age: age || null,
+      position: pos,
+      applicable,
       curve
     };
   }
 
-  const yearsToRetirement = roundNum(curve.retirement - age, 1);
+  const yearsToRetirement = Math.max(0, roundNum(curve.retirement - age, 1));
   let adjustment = 0;
   let stage = 'prime';
 
@@ -1153,8 +1167,42 @@ function ageCurveProfile(player, league) {
     adjustment: roundNum(adjustment * state.settings.ageWeight, 0),
     stage,
     yearsToRetirement,
+    retirementAge: curve.retirement,
+    age,
+    position: pos,
+    applicable: true,
     curve
   };
+}
+
+function ageStageLabel(stage) {
+  return AGE_STAGE_LABELS[stage] || AGE_STAGE_LABELS.unknown;
+}
+
+function retirementHorizonLabel(profile, { compact = false } = {}) {
+  if (!profile?.applicable) return '';
+  if (!profile.age || profile.yearsToRetirement === null) return compact ? 'Age unavailable' : 'Age and horizon unavailable';
+  if (profile.yearsToRetirement <= 0) {
+    return compact
+      ? `At ${profile.position} horizon`
+      : `At or beyond the estimated ${profile.position} horizon (age ${profile.retirementAge})`;
+  }
+  const years = displayNumber(profile.yearsToRetirement, 1);
+  return compact
+    ? `~${years}y to ${profile.position} horizon`
+    : `~${years} ${Number(profile.yearsToRetirement) === 1 ? 'year' : 'years'} to the estimated ${profile.position} horizon (age ${profile.retirementAge})`;
+}
+
+function dynastyAgeSummary(league, playerOrId, { compact = true, includeStage = false } = {}) {
+  if (!isDynastyLeague(league)) return '';
+  const player = typeof playerOrId === 'object' ? playerOrId : (getPlayer(playerOrId) || {});
+  const profile = ageCurveProfile(player, league);
+  if (!profile.applicable) return '';
+  if (!profile.age) return 'Age unavailable';
+  const pieces = [`Age ${displayNumber(profile.age, 1)}`];
+  if (includeStage) pieces.push(ageStageLabel(profile.stage));
+  pieces.push(retirementHorizonLabel(profile, { compact }));
+  return pieces.filter(Boolean).join(compact ? ' • ' : ' · ');
 }
 
 function statusValueAdjustment(baseValue, player, league) {
@@ -1233,9 +1281,13 @@ function playerValue(league, playerId) {
     efficiencyAdj: roundNum(efficiencyAdj, 0),
     recentAdj: roundNum(recentAdj, 0),
     dynastyAdj: roundNum(ageAdj, 0),
+    dynastyAgeAdjustment: roundNum(ageAdj, 0),
     ageStage: ageProfile.stage,
     yearsToRetirement: ageProfile.yearsToRetirement,
-    expectedPositionRetirement: ageProfile.curve?.retirement || null,
+    retirementHorizonYears: ageProfile.yearsToRetirement,
+    expectedPositionRetirement: ageProfile.retirementAge,
+    retirementHorizonAge: ageProfile.retirementAge,
+    ageApplicable: ageProfile.applicable,
     statusAdj: roundNum(statusAdj, 0),
     confidence: roundNum(dataConfidence * 100, 0)
   };
@@ -1252,7 +1304,7 @@ function playerValue(league, playerId) {
     starts: rec?.starts || 0,
     games: rec?.games || 0,
     percentile: roundNum(percentile * 100, 0),
-    age: player?.age || '',
+    age: isDynastyLeague(league) ? (player?.age || '') : '',
     position: pos,
     status: player?.injury_status || player?.status || '',
     name: playerName(key),
@@ -1649,8 +1701,9 @@ function renderAssetBreakdown(league, assets, title) {
   const rows = assets.map(asset => {
     const v = assetValue(league, asset);
     const label = asset.type === 'player' ? `${v.name} (${v.position})` : v.label;
+    const dynastyContext = asset.type === 'player' ? dynastyAgeSummary(league, asset.playerId) : '';
     const detail = asset.type === 'player'
-      ? `${v.forecastPpg} forecast PPG, ${v.vorp >= 0 ? '+' : ''}${v.vorp} over replacement, ${v.efficiency}th efficiency percentile, ${v.confidence} confidence${v.marketAdp ? `, ADP ${roundNum(v.marketAdp, 1)}` : ''}`
+      ? `${v.forecastPpg} forecast PPG, ${v.vorp >= 0 ? '+' : ''}${v.vorp} over replacement, ${v.efficiency}th efficiency percentile, ${v.confidence} confidence${v.marketAdp ? `, ADP ${roundNum(v.marketAdp, 1)}` : ''}${dynastyContext ? `, ${dynastyContext}` : ''}`
       : v.detail;
     return `<li><strong>${escapeHtml(label)}</strong> — ${roundNum(v.value)} <small>${escapeHtml(detail || '')}</small></li>`;
   }).join('') || '<li>None</li>';
@@ -1691,8 +1744,9 @@ function renderAssetList(side) {
   el.innerHTML = assets.map((asset, idx) => {
     const v = league ? assetValue(league, asset) : { value: 0, label: 'Pick', detail: '' };
     const title = asset.type === 'player' ? playerName(asset.playerId) : v.label;
+    const dynastyContext = asset.type === 'player' && league ? dynastyAgeSummary(league, asset.playerId) : '';
     const sub = asset.type === 'player'
-      ? `${playerPrimaryPosition(asset.playerId)} • value ${v.value} • ${v.forecastPpg} forecast PPG • ${v.confidence} confidence`
+      ? `${playerPrimaryPosition(asset.playerId)} • value ${v.value} • ${v.forecastPpg} forecast PPG • ${v.confidence} confidence${dynastyContext ? ` • ${dynastyContext}` : ''}`
       : `${v.detail || 'Draft pick'} • value ${v.value}`;
     return `<div class="asset-card"><div><strong>${escapeHtml(title)}</strong><small>${escapeHtml(sub)}</small></div><button class="ghost" data-side="${side}" data-idx="${idx}">Remove</button></div>`;
   }).join('');
@@ -1862,16 +1916,18 @@ function renderPlayerStatCard(league, playerId) {
   const rankText = `#${data.rank.rank} ${data.rank.position}`;
   const sourceLabel = data.rec.source === 'historical' ? `${data.rec.season === 'multi' ? 'Past 2 seasons' : data.rec.season}` : `${league.season || ''} league`;
   const matchupLabel = `${data.value.forecastPpg} forecast PPG · ${data.value.efficiency}th efficiency pct`;
+  const dynasty = isDynastyLeague(league);
   const ageProfile = ageCurveProfile(data.player, league);
-  const ageCurveTitle = isDynastyLeague(league) ? ageProfile.stage : 'N/A';
-  const ageCurveSubtitle = ageProfile.yearsToRetirement !== null ? `${ageProfile.yearsToRetirement}y runway` : 'Age Curve';
+  const ageCurveTitle = ageStageLabel(ageProfile.stage);
+  const ageCurveSubtitle = retirementHorizonLabel(ageProfile, { compact: true });
+  const playerMeta = [data.team, dynasty && data.age ? `Age ${data.age}` : '', `${games} ${gamesLabel}`].filter(Boolean).join(' · ');
   return `
     <article class="player-card" data-player-card data-player-id="${escapeHtml(data.playerId)}" data-league-id="${escapeHtml(league.league_id)}">
       <div class="player-card-header">
         <img class="player-headshot" src="${playerHeadshotUrl(data.playerId)}" alt="${escapeHtml(data.name)} headshot" onerror="this.onerror=null;this.src='${fallback}';" />
         <div class="player-identity">
           <h3>${escapeHtml(data.name)} <span class="status-dot ${tone === 'good' ? '' : tone}"></span></h3>
-          <div class="player-meta-row"><span class="position-pill">${escapeHtml(data.position)}</span><span>${escapeHtml(data.team)} · ${data.age ? `${escapeHtml(data.age)} yrs` : 'age n/a'} · ${games} ${gamesLabel}</span></div>
+          <div class="player-meta-row"><span class="position-pill">${escapeHtml(data.position)}</span><span>${escapeHtml(playerMeta)}</span></div>
           <div class="matchup-pill">${escapeHtml(matchupLabel)}</div>
         </div>
         <div class="player-score">
@@ -1906,7 +1962,7 @@ function renderPlayerStatCard(league, playerId) {
           <div class="stat-tile"><strong>${data.value.vorp >= 0 ? '+' : ''}${data.value.vorp}</strong><span>VORP / Week</span></div>
           <div class="stat-tile"><strong>${data.rank.rank}/${data.rank.total}</strong><span>Value Rank</span></div>
           <div class="stat-tile"><strong>${data.value.efficiency}</strong><span>Efficiency Pct</span></div>
-          <div class="stat-tile"><strong>${escapeHtml(ageCurveTitle)}</strong><span>${escapeHtml(ageCurveSubtitle)}</span></div>
+          ${dynasty ? `<div class="stat-tile"><strong>${escapeHtml(ageCurveTitle)}</strong><span>${escapeHtml(ageCurveSubtitle)}</span></div>` : ''}
         </div>
       </div>
 
@@ -1948,6 +2004,7 @@ function renderTradePlayerCard(league, playerId) {
   const previous = records[1] || blankStatRecord(playerId, currentSeasonNumber(league) - 1);
   const fallback = playerFallbackAvatar(name, position);
   const tone = statusTone(value.status || player.injury_status || player.status);
+  const dynastyContext = dynastyAgeSummary(league, player, { compact: false, includeStage: true });
   return `
     <article class="player-card trade-player-card">
       <div class="player-card-header compact-player-header">
@@ -1956,6 +2013,7 @@ function renderTradePlayerCard(league, playerId) {
           <h3>${escapeHtml(name)} <span class="status-dot ${tone === 'good' ? '' : tone}"></span></h3>
           <div class="player-meta-row"><span class="position-pill">${escapeHtml(position)}</span><span>${escapeHtml(player.team || 'FA')} · ${value.forecastPpg} forecast PPG · ${value.efficiency}th efficiency pct</span></div>
           <div class="matchup-pill">${value.vorp >= 0 ? '+' : ''}${value.vorp} over replacement · ${escapeHtml(value.confidence)} confidence</div>
+          ${dynastyContext ? `<div class="career-horizon-pill"><span>Dynasty</span>${escapeHtml(dynastyContext)}</div>` : ''}
         </div>
         <div class="player-score compact-score">
           <strong>${roundNum(value.value, 1)}</strong>
@@ -2014,15 +2072,16 @@ function renderTradeModelExplanation(league) {
   if (idpSlotCount(league)) rules.push(`${idpSlotCount(league)} IDP slots`);
   const formatText = rules.length ? rules.join(', ') : 'standard positional multipliers';
   const coverage = roundNum(safeNumber(league.projectionModel?.coverage, 0) * 100, 0);
+  const dynasty = isDynastyLeague(league);
   return `
     <section class="result-card model-explanation">
       <h3>What the trade model used</h3>
-      <p>Player price and team fit are modeled separately. Format-specific Sleeper ADP anchors the market price; league-scored projections, replacement level, verified production, efficiency, age, and availability refine it without letting one noisy input dominate.</p>
+      <p>Player price and team fit are modeled separately. Format-specific Sleeper ADP anchors the market price; league-scored projections, replacement level, verified production, efficiency${dynasty ? ', player age, positional career horizon' : ''}, and availability refine it without letting one noisy input dominate.</p>
       <ul>
-        <li><strong>Market anchor:</strong> format-aware Sleeper ADP (${isDynastyLeague(league) ? 'dynasty' : 'redraft'}, ${isSuperflexLeague(league) ? 'superflex/2QB' : '1QB'}, ${escapeHtml(scoringAdpSuffix(league))}) replaces the old hard-coded player list.</li>
+        <li><strong>Market anchor:</strong> format-aware Sleeper ADP (${dynasty ? 'dynasty' : 'redraft'}, ${isSuperflexLeague(league) ? 'superflex/2QB' : '1QB'}, ${escapeHtml(scoringAdpSuffix(league))}) replaces the old hard-coded player list.</li>
         <li><strong>Projection:</strong> ${escapeHtml(state.projectionSeason || activeValuationSeason(league))} raw stat projections are rescored under the league's available scoring fields. Per-game threshold bonuses use observed weekly data rather than being guessed from a season total. Roster projection coverage: ${coverage}%.</li>
         <li><strong>Replacement and efficiency:</strong> projected points are measured against a replacement level derived from league size and actual QB, flex, superflex, TE, and IDP starter demand. Opportunity-adjusted efficiency is a controlled secondary input.</li>
-        <li><strong>Dynasty age curve:</strong> position-specific age effects are intentionally small when dynasty ADP already prices age, preventing age from being counted twice.</li>
+        ${dynasty ? '<li><strong>Age and retirement horizon:</strong> player age is evaluated against a position-specific prime, decline window, and estimated career horizon. The horizon is a planning estimate, not a player-specific retirement prediction, and its effect stays small when dynasty ADP already prices age.</li>' : ''}
         <li><strong>Verified production:</strong> league matchup data for ${escapeHtml(league.season || currentSeasonNumber(league))}, plus recent form and historical production scored under this league's rules.</li>
         <li><strong>Previous years:</strong> best-effort historical stat fetches scored under this league's scoring rules. Loaded seasons: ${escapeHtml(seasons)}.</li>
         <li><strong>League format:</strong> ${escapeHtml(formatText)}.</li>
@@ -2589,6 +2648,7 @@ function renderPlayerValues() {
   const league = getSelectedLeague();
   const el = $('playerValuesTable');
   if (!league) { el.innerHTML = '<p class="empty">Load a league first.</p>'; return; }
+  const dynasty = isDynastyLeague(league);
   const query = String($('playerValueSearch').value || '').toLowerCase().trim();
   const posFilter = $('playerPositionFilter').value;
   const rostered = new Set((league.rosters || []).flatMap(r => r.players || []).map(String));
@@ -2600,14 +2660,20 @@ function renderPlayerValues() {
     .slice(0, 250);
   const selected = selectedCompareIds();
   renderCompareSelectionSlots();
-  el.innerHTML = `<table><thead><tr><th>Player</th><th>Pos</th><th>Value</th><th>Forecast</th><th>VORP</th><th>Efficiency</th><th>ADP</th><th>Confidence</th></tr></thead><tbody>${rows.map(v => {
+  const dynastyHeaders = dynasty ? '<th>Age</th><th>Retirement horizon</th>' : '';
+  el.innerHTML = `<table><thead><tr><th>Player</th><th>Pos</th><th>Value</th>${dynastyHeaders}<th>Forecast</th><th>VORP</th><th>Efficiency</th><th>ADP</th><th>Confidence</th></tr></thead><tbody>${rows.map(v => {
     const isA = String(selected.A) === String(v.playerId);
     const isB = String(selected.B) === String(v.playerId);
     const selectedClass = isA ? ' selected-a' : isB ? ' selected-b' : '';
     const locked = selected.A && selected.B && !isA && !isB;
     const selectionText = isA ? 'Selected 1 · tap again to remove' : isB ? 'Selected 2 · tap again to remove' : locked ? 'Both slots filled' : !selected.A ? 'Tap to select 1' : 'Tap to select 2';
     const selectionBadge = isA ? '<span class="selection-badge first">1</span>' : isB ? '<span class="selection-badge second">2</span>' : '';
-    return `<tr class="player-row-clickable${selectedClass}${locked ? ' selection-locked' : ''}" data-player-id="${escapeHtml(v.playerId)}"><td><div class="player-table-name-row">${selectionBadge}<span>${escapeHtml(v.name)}</span></div><small>${escapeHtml(getPlayer(v.playerId)?.team || 'FA')} · ${escapeHtml(selectionText)}</small></td><td>${escapeHtml(v.position)}</td><td><strong>${displayNumber(v.value, 0)}</strong></td><td>${displayNumber(v.forecastPpg)}</td><td>${displaySignedNumber(v.vorp)}</td><td>${displayNumber(v.efficiency, 0)}th</td><td>${v.marketAdp ? displayNumber(v.marketAdp) : '—'}</td><td>${escapeHtml(v.confidence)}</td></tr>`;
+    const player = getPlayer(v.playerId) || {};
+    const ageProfile = dynasty ? ageCurveProfile(player, league) : null;
+    const dynastyCells = dynasty
+      ? `<td>${ageProfile?.age ? displayNumber(ageProfile.age, 1) : '—'}</td><td title="Estimated positional planning horizon, not a player-specific retirement prediction">${escapeHtml(retirementHorizonLabel(ageProfile, { compact: true }) || '—')}</td>`
+      : '';
+    return `<tr class="player-row-clickable${selectedClass}${locked ? ' selection-locked' : ''}" data-player-id="${escapeHtml(v.playerId)}"><td><div class="player-table-name-row">${selectionBadge}<span>${escapeHtml(v.name)}</span></div><small>${escapeHtml(player.team || 'FA')} · ${escapeHtml(selectionText)}</small></td><td>${escapeHtml(v.position)}</td><td><strong>${displayNumber(v.value, 0)}</strong></td>${dynastyCells}<td>${displayNumber(v.forecastPpg)}</td><td>${displaySignedNumber(v.vorp)}</td><td>${displayNumber(v.efficiency, 0)}th</td><td>${v.marketAdp ? displayNumber(v.marketAdp) : '—'}</td><td>${escapeHtml(v.confidence)}</td></tr>`;
   }).join('')}</tbody></table>`;
   el.querySelectorAll('tr[data-player-id]').forEach(row => {
     row.addEventListener('click', () => togglePlayerValueSelection(row.dataset.playerId));
@@ -3803,6 +3869,7 @@ function renderEverything() {
   renderTables();
   renderAssetList('A');
   renderAssetList('B');
+  updateDynastyOnlyControls();
 }
 
 function applyModelSettingsFromUI() {
@@ -3995,6 +4062,15 @@ function applySettingsToUI() {
   }
 }
 
+function updateDynastyOnlyControls() {
+  const league = getSelectedLeague();
+  const dynasty = Boolean(league && isDynastyLeague(league));
+  const control = $('dynastyAgeWeightControl');
+  const input = $('ageWeight');
+  if (control) control.hidden = !dynasty;
+  if (input) input.disabled = !dynasty;
+}
+
 async function boot() {
   wireEvents();
   applySettingsToUI();
@@ -4021,6 +4097,9 @@ if (typeof module !== 'undefined' && module.exports) {
     fantasyPointsFromStats,
     marketValueFromRank,
     marketSignalForPlayer,
+    ageCurveProfile,
+    retirementHorizonLabel,
+    dynastyAgeSummary,
     starterDemandPerRoster,
     buildProjectionModel,
     forecastForPlayer,
