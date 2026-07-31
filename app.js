@@ -461,8 +461,24 @@ async function loadLeague(leagueId) {
     fetchJson(`${API_BASE}/league/${leagueId}/drafts`, 'drafts').catch(() => [])
   ]);
 
+  const detailedDrafts = await Promise.all((drafts || []).map(async draft => {
+    if (!draft?.draft_id) return draft;
+    try {
+      const detail = await fetchJson(`${API_BASE}/draft/${draft.draft_id}`, `draft ${draft.draft_id}`);
+      return {
+        ...draft,
+        ...detail,
+        settings: { ...(draft.settings || {}), ...(detail?.settings || {}) },
+        metadata: { ...(draft.metadata || {}), ...(detail?.metadata || {}) }
+      };
+    } catch (err) {
+      console.warn(err);
+      return draft;
+    }
+  }));
+
   const draftPicks = [];
-  for (const draft of (drafts || [])) {
+  for (const draft of detailedDrafts) {
     try {
       const picks = await fetchJson(`${API_BASE}/draft/${draft.draft_id}/picks`, `draft picks ${draft.draft_id}`);
       draftPicks.push(...(picks || []).map(pick => ({
@@ -498,7 +514,7 @@ async function loadLeague(leagueId) {
     users: users || [],
     rosters: rosters || [],
     tradedPicks: tradedPicks || [],
-    drafts: drafts || [],
+    drafts: detailedDrafts,
     draftPicks,
     matchupsByWeek,
     transactionsByWeek,
@@ -1353,27 +1369,65 @@ function interpolatePickBand(band, strengthRank) {
   return band.mid + (band.late - band.mid) * ((rank - 0.5) / 0.5);
 }
 
+function draftPickPositionForAsset(league, pick = {}) {
+  const season = Number(pick.season);
+  const round = Number(pick.round);
+  const originalRosterId = Number(
+    pick.roster_id || pick.originalRosterId || pick.original_roster_id || pick.ownerRosterId || pick.owner_id
+  );
+  if (!league || !season || !round || !originalRosterId) return null;
+
+  const row = draftSelectionRows(league, season).find(candidate => (
+    Number(candidate.round) === round && Number(candidate.originalRosterId) === originalRosterId
+  ));
+  if (!row) return null;
+
+  return {
+    exact: Boolean(row.exact),
+    pickLabel: row.pickLabel,
+    roundPick: Number(row.roundPick),
+    overallPick: Number(row.overallPick),
+    teamCount: Math.max(1, safeNumber(league.total_rosters, league.rosters?.length || 1))
+  };
+}
+
 function pickValue(league, pick) {
   const currentSeason = activeValuationSeason(league);
   const season = Number(pick.season || currentSeason + 1);
   const round = Number(pick.round || 1);
   const original = Number(pick.roster_id || pick.originalRosterId || pick.original_roster_id || pick.ownerRosterId || pick.owner_id);
   const strengthRank = teamStrengthRank(league, original);
+  const resolvedPosition = draftPickPositionForAsset(league, { season, round, originalRosterId: original });
+  const teamCount = Math.max(1, safeNumber(league.total_rosters, league.rosters?.length || 1));
+  const positionRank = resolvedPosition?.exact
+    ? (teamCount === 1 ? 0.5 : clamp01((resolvedPosition.roundPick - 1) / (teamCount - 1)))
+    : strengthRank;
   const band = PICK_VALUE_BANDS[round] || { early: 80, mid: 45, late: 25 };
-  const base = interpolatePickBand(band, strengthRank);
+  const base = interpolatePickBand(band, positionRank);
   const yearsOut = Math.max(0, season - currentSeason);
   const timeFactors = [1, 0.9, 0.78, 0.68];
   const timeFactor = timeFactors[yearsOut] ?? Math.max(0.52, 0.68 - (yearsOut - 3) * 0.08);
   const formatFactor = round === 1 && !isSuperflexLeague(league) ? 0.96 : 1;
   const value = roundNum(base * timeFactor * formatFactor * state.settings.pickWeight, 0);
-  const teamCount = Math.max(1, safeNumber(league.total_rosters, league.rosters?.length || 1));
-  const expectedSlot = roundNum(1 + strengthRank * Math.max(0, teamCount - 1), 1);
-  const range = strengthRank <= 0.33 ? 'early' : strengthRank >= 0.67 ? 'late' : 'mid';
+  const expectedSlot = resolvedPosition?.roundPick || roundNum(1 + strengthRank * Math.max(0, teamCount - 1), 1);
+  const fallbackPickLabel = `${round}.${String(Math.max(1, Math.round(expectedSlot))).padStart(2, '0')}`;
+  const pickLabel = resolvedPosition?.pickLabel || fallbackPickLabel;
+  const exact = Boolean(resolvedPosition?.exact);
+  const range = positionRank <= 0.33 ? 'early' : positionRank >= 0.67 ? 'late' : 'mid';
+  const timingDetail = yearsOut ? `${yearsOut}-year discount applied` : 'current class';
   return {
     value,
-    label: `${season} Round ${round} (${teamName(league, original)} original pick)`,
-    detail: `projected ${range} (about ${round}.${String(Math.max(1, Math.round(expectedSlot))).padStart(2, '0')}); ${yearsOut ? `${yearsOut}-year discount applied` : 'current class'}`,
-    confidence: league.teamStrength?.has(original) ? 'Medium' : 'Low',
+    label: exact
+      ? `${season} Pick ${pickLabel} (${teamName(league, original)} original pick)`
+      : `${season} Round ${round} (${teamName(league, original)} original pick)`,
+    detail: exact
+      ? `Exact draft position ${pickLabel}; ${timingDetail}`
+      : `projected ${range} (about ${pickLabel}); ${timingDetail}`,
+    confidence: exact ? 'High' : league.teamStrength?.has(original) ? 'Medium' : 'Low',
+    confidenceScore: exact ? 90 : league.teamStrength?.has(original) ? 62 : 45,
+    exact,
+    pickLabel,
+    positionLabel: `${exact ? '' : '~'}${pickLabel}`,
     expectedSlot,
     range
   };
@@ -1425,7 +1479,7 @@ function packageValuation(league, assets = []) {
     const detail = assetValue(league, asset);
     return {
       asset, type: asset.type, value: safeNumber(detail.value), detail,
-      confidenceScore: asset.type === 'player' ? safeNumber(detail.confidenceScore, 50) : 62
+      confidenceScore: asset.type === 'player' ? safeNumber(detail.confidenceScore, 50) : safeNumber(detail.confidenceScore, 62)
     };
   });
   return adjustPackageValues(entries);
@@ -3002,10 +3056,24 @@ function preferredDraftForSeason(league, season) {
   const drafts = draftForSeason(league, season);
   if (!drafts.length) return null;
   const priority = { drafting: 0, pre_draft: 1, paused: 2, complete: 3, completed: 3 };
+  const primaryDraftId = String(league?.draft_id || '');
   return drafts.slice().sort((a, b) => {
+    const aPrimary = primaryDraftId && String(a?.draft_id || '') === primaryDraftId ? 0 : 1;
+    const bPrimary = primaryDraftId && String(b?.draft_id || '') === primaryDraftId ? 0 : 1;
+    if (aPrimary !== bPrimary) return aPrimary - bPrimary;
     const aStatus = priority[String(a?.status || '').toLowerCase()] ?? 2;
     const bStatus = priority[String(b?.status || '').toLowerCase()] ?? 2;
-    return aStatus - bStatus;
+    if (aStatus !== bStatus) return aStatus - bStatus;
+    const aOrderCount = Math.max(
+      Object.keys(a?.slot_to_roster_id || a?.slotToRosterId || a?.metadata?.slot_to_roster_id || {}).length,
+      Object.keys(a?.draft_order || a?.draftOrder || {}).length
+    );
+    const bOrderCount = Math.max(
+      Object.keys(b?.slot_to_roster_id || b?.slotToRosterId || b?.metadata?.slot_to_roster_id || {}).length,
+      Object.keys(b?.draft_order || b?.draftOrder || {}).length
+    );
+    if (aOrderCount !== bOrderCount) return bOrderCount - aOrderCount;
+    return safeNumber(b?.created || b?.start_time, 0) - safeNumber(a?.created || a?.start_time, 0);
   })[0];
 }
 

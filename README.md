@@ -19,7 +19,7 @@ Then open `http://localhost:5173`.
 - Dynasty views show each player's age, age-curve stage, and estimated years to a position-specific retirement horizon. Redraft values and views exclude the age/horizon layer.
 - Trade evaluation applies elite-asset scarcity and package consolidation before showing each team's separate projected lineup/depth impact.
 - Trade analysis updates automatically whenever a team, player, pick, or model setting changes.
-- Pick values use continuous early/mid/late bands, original-roster strength, format, and a future-year discount.
+- Pick values use the exact Sleeper draft slot once order is published; unset orders use original-roster strength, with format and future-year adjustments applied in either case.
 - The rookie fit board ranks the best overall roster fits on the left and likely options at each owned pick on the right.
 - Draft availability uses exact Sleeper draft order when published, projects unset slots from roster strength, follows traded-pick ownership, and runs repeated team-need-aware mock drafts.
 - League management lives in Settings; the active league selector is available globally.
