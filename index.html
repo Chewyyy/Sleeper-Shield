@@ -1,152 +1,219 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#050607" />
-  <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <meta name="apple-mobile-web-app-title" content="Trade Shield" />
-  <meta name="mobile-web-app-capable" content="yes" />
-  <link rel="manifest" href="manifest.webmanifest" />
-  <link rel="apple-touch-icon" href="apple-touch-icon.png" />
-  <title>Trade Shield</title>
-  <link rel="stylesheet" href="styles.css" />
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#07111f">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Sleeper Shield">
+  <meta name="mobile-web-app-capable" content="yes">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <title>Sleeper Shield</title>
+  <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <div class="app-shell">
-    <aside class="sidebar">
+    <header class="topbar">
       <div class="brand">
-        <div class="brand-mark">STS</div>
-        <div>
-          <h1>Trade Shield</h1>
-          <p>Fair trades, clean player cards, and quick league recaps.</p>
+        <div class="brand-mark" aria-hidden="true">SS</div>
+        <div class="brand-copy">
+          <h1>Sleeper Shield</h1>
+          <p>League intelligence</p>
         </div>
       </div>
 
-      <section class="panel compact">
-        <label for="leagueIdInput">Add league ID</label>
-        <div class="league-add-row">
-          <input id="leagueIdInput" inputmode="numeric" placeholder="Sleeper league ID" />
-          <button id="addLeagueIdBtn" class="primary">Add</button>
-        </div>
-        <div class="button-row single-action">
-          <button id="clearBtn" class="ghost">Clear saved leagues</button>
-        </div>
-        <p class="hint">Saved leagues load automatically on this device. Public Sleeper data only. No login required.</p>
-      </section>
+      <nav class="tabs" aria-label="Primary navigation">
+        <button class="tab active" type="button" data-tab="dashboard" data-short="Home">Home</button>
+        <button class="tab" type="button" data-tab="trade" data-short="Trade">Trade</button>
+        <button class="tab" type="button" data-tab="draft" data-short="Draft">Draft</button>
+        <button class="tab" type="button" data-tab="recaps" data-short="Recaps">Recaps</button>
+        <button class="tab" type="button" data-tab="players" data-short="Players">Players</button>
+        <button class="tab" type="button" data-tab="settings" data-short="Settings">Settings</button>
+      </nav>
 
-      <section class="panel compact">
-        <div class="section-title">Leagues</div>
-        <div id="loadedLeagues" class="league-list empty">No leagues loaded.</div>
-      </section>
-    </aside>
+      <label class="league-switcher">
+        <span>Active league</span>
+        <select id="globalLeagueSelect" aria-label="Active league">
+          <option value="">No league loaded</option>
+        </select>
+      </label>
+    </header>
 
     <main class="main">
-      <header class="topbar">
-        <nav class="tabs" aria-label="Primary">
-          <button class="tab active" data-tab="dashboard" data-short="Home">Home</button>
-          <button class="tab" data-tab="trade" data-short="Trade">Trade</button>
-          <button class="tab" data-tab="recaps" data-short="Recap">Recaps</button>
-          <button class="tab" data-tab="players" data-short="Players">Players</button>
-          <button class="tab" data-tab="settings" data-short="Model">Model</button>
-        </nav>
-        <button id="exportDataBtn" class="secondary export-btn">Export</button>
-      </header>
-
       <section id="dashboard" class="tab-panel active">
-        <div class="hero panel">
+        <div class="page-heading">
           <div>
-            <h2>Check a trade before you accept it.</h2>
-            <p>Load your leagues, compare players and picks, and generate clean recap packets you can paste into ChatGPT.</p>
+            <span class="eyebrow">League command center</span>
+            <h2>See the whole league at a glance.</h2>
+            <p>Standings, roster strength, scoring context, and the information that matters before your next move.</p>
           </div>
-          <div class="hero-grid">
+        </div>
+
+        <section class="hero panel">
+          <div class="hero-copy">
+            <span class="hero-kicker">Built for your exact format</span>
+            <h3>Make decisions with league-specific context.</h3>
+            <p>Sleeper Shield rescales projections, replacement value, roster needs, and draft capital whenever you switch leagues.</p>
+            <button class="secondary inline-action" type="button" data-open-tab="trade">Open trade analyzer</button>
+          </div>
+          <div class="hero-grid" role="group" aria-label="Loaded data summary">
             <div class="metric"><span id="metricLeagues">0</span><small>Leagues</small></div>
             <div class="metric"><span id="metricTeams">0</span><small>Teams</small></div>
             <div class="metric"><span id="metricPlayers">0</span><small>Players cached</small></div>
             <div class="metric"><span id="metricWeeks">0</span><small>Weeks loaded</small></div>
           </div>
-        </div>
+        </section>
 
-        <div class="grid two">
+        <div class="grid two dashboard-grid">
           <section class="panel">
-            <h3>Standings</h3>
-            <select id="dashboardLeagueSelect"></select>
+            <div class="panel-heading-row compact-heading-row">
+              <div><span class="panel-kicker">Current order</span><h3>Standings</h3></div>
+            </div>
             <div id="standingsTable" class="table-wrap"></div>
           </section>
           <section class="panel">
-            <h3>Roster strength</h3>
+            <div class="panel-heading-row compact-heading-row">
+              <div><span class="panel-kicker">Modeled outlook</span><h3>Roster strength</h3></div>
+            </div>
             <div id="strengthTable" class="table-wrap"></div>
           </section>
         </div>
 
         <section class="panel">
-          <div class="panel-heading-row">
-            <h3>League rules</h3>
-            <select id="rulesLeagueSelect"></select>
+          <div class="panel-heading-row compact-heading-row">
+            <div><span class="panel-kicker">Model context</span><h3>League rules</h3></div>
           </div>
           <div id="leagueRulesPanel" class="rules-panel empty">Load a league to view format and scoring rules.</div>
         </section>
       </section>
 
       <section id="trade" class="tab-panel">
-        <div class="panel">
-          <div class="form-grid trade-team-grid">
-            <label>League
-              <select id="tradeLeagueSelect"></select>
-            </label>
-            <div class="team-select-block">
+        <div class="page-heading split-heading">
+          <div>
+            <span class="eyebrow">Live trade analyzer</span>
+            <h2>Build the deal. The math follows.</h2>
+            <p>Every asset, team, and model change recalculates automatically.</p>
+          </div>
+          <span class="live-pill"><span aria-hidden="true"></span> Auto-evaluating</span>
+        </div>
+
+        <section class="panel trade-setup-panel">
+          <div class="trade-setup-grid">
+            <div class="team-select-block team-a-accent">
+              <span class="side-label">Side A</span>
               <label>Team A
                 <select id="teamASelect"></select>
               </label>
               <p id="teamANeedsNote" class="team-need-note">Load a league to see roster needs.</p>
             </div>
-            <div class="team-select-block">
+            <div class="trade-direction" aria-hidden="true">⇄</div>
+            <div class="team-select-block team-b-accent">
+              <span class="side-label">Side B</span>
               <label>Team B
                 <select id="teamBSelect"></select>
               </label>
               <p id="teamBNeedsNote" class="team-need-note">Load a league to see roster needs.</p>
             </div>
           </div>
-        </div>
+        </section>
 
-        <div class="grid two">
-          <section class="panel asset-panel">
-            <h3>Team A sends</h3>
-            <div class="asset-controls">
-              <select id="teamAPlayerSelect"></select>
-              <button id="teamAAddPlayer" class="secondary">Add asset</button>
+        <div class="grid two trade-assets-grid">
+          <section class="panel asset-panel team-a-panel">
+            <div class="panel-heading-row compact-heading-row">
+              <div><span class="panel-kicker">Outgoing assets</span><h3>Team A sends</h3></div>
+              <span class="auto-note">Select to add</span>
             </div>
-            <input id="teamAPlayerSearch" list="playerOptions" placeholder="Or search any player" />
+            <label class="asset-picker-label">Roster player or pick
+              <select id="teamAPlayerSelect"></select>
+            </label>
+            <label class="asset-picker-label">Any NFL player
+              <input id="teamAPlayerSearch" type="text" list="playerOptions" autocomplete="off" placeholder="Search and select a player">
+            </label>
             <div id="teamAAssets" class="asset-list empty">No assets selected.</div>
           </section>
 
-          <section class="panel asset-panel">
-            <h3>Team B sends</h3>
-            <div class="asset-controls">
-              <select id="teamBPlayerSelect"></select>
-              <button id="teamBAddPlayer" class="secondary">Add asset</button>
+          <section class="panel asset-panel team-b-panel">
+            <div class="panel-heading-row compact-heading-row">
+              <div><span class="panel-kicker">Outgoing assets</span><h3>Team B sends</h3></div>
+              <span class="auto-note">Select to add</span>
             </div>
-            <input id="teamBPlayerSearch" list="playerOptions" placeholder="Or search any player" />
+            <label class="asset-picker-label">Roster player or pick
+              <select id="teamBPlayerSelect"></select>
+            </label>
+            <label class="asset-picker-label">Any NFL player
+              <input id="teamBPlayerSearch" type="text" list="playerOptions" autocomplete="off" placeholder="Search and select a player">
+            </label>
             <div id="teamBAssets" class="asset-list empty">No assets selected.</div>
           </section>
         </div>
 
-        <section class="panel">
-          <div class="button-row spaced">
-            <button id="evaluateTradeBtn" class="primary">Evaluate</button>
-            <button id="resetTradeBtn" class="ghost">Reset</button>
+        <section class="panel analysis-panel">
+          <div class="panel-heading-row compact-heading-row">
+            <div><span class="panel-kicker">Updated automatically</span><h3>Trade analysis</h3></div>
+            <button id="resetTradeBtn" class="ghost small-button" type="button">Reset trade</button>
           </div>
-          <div id="tradeResult" class="trade-result empty">Add both sides of the deal, then evaluate.</div>
+          <div id="tradeResult" class="trade-result empty" aria-live="polite">Add an asset to each side to see the live analysis.</div>
+        </section>
+      </section>
+
+      <section id="draft" class="tab-panel">
+        <div class="page-heading split-heading">
+          <div>
+            <span class="eyebrow">Rookie fit board</span>
+            <h2>Find prospects who fit the roster.</h2>
+            <p>Available rookie market data is blended with league scoring, projection upside, draft capital, and your team’s positional needs.</p>
+          </div>
+          <span class="beta-pill">Beta</span>
+        </div>
+
+        <section class="panel draft-controls-panel">
+          <div class="form-grid draft-controls">
+            <label>Team
+              <select id="draftTeamSelect"></select>
+            </label>
+            <label>Draft class
+              <select id="draftSeasonSelect"></select>
+            </label>
+            <label>Position
+              <select id="draftPositionFilter">
+                <option value="NEED">Prioritize team needs</option>
+                <option value="ALL">Best available</option>
+                <option value="QB">QB</option>
+                <option value="RB">RB</option>
+                <option value="WR">WR</option>
+                <option value="TE">TE</option>
+                <option value="DL">DL</option>
+                <option value="LB">LB</option>
+                <option value="DB">DB</option>
+              </select>
+            </label>
+          </div>
+          <div id="draftNeedsSummary" class="draft-needs-summary empty">Load a league to build a team-specific draft board.</div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-heading-row compact-heading-row">
+            <div><span class="panel-kicker">Personalized rankings</span><h3>Top targets</h3></div>
+            <span id="draftDataStatus" class="auto-note">Sleeper data</span>
+          </div>
+          <div id="draftRecommendations" class="prospect-grid empty">Load a league to view rookie targets.</div>
+          <p class="hint">Prospect coverage depends on when Sleeper publishes players, ADP, and projections for the selected class. Rankings are a fit tool, not a substitute for film or scouting.</p>
         </section>
       </section>
 
       <section id="recaps" class="tab-panel">
-        <section class="panel">
+        <div class="page-heading">
+          <div>
+            <span class="eyebrow">League recaps</span>
+            <h2>Turn league activity into a clean brief.</h2>
+            <p>Change the week or range and the recap regenerates automatically.</p>
+          </div>
+        </div>
+
+        <section class="panel recap-panel">
           <div class="form-grid recap-controls">
-            <label>League
-              <select id="recapLeagueSelect"></select>
-            </label>
             <label>Week
               <select id="recapWeekSelect"></select>
             </label>
@@ -155,65 +222,63 @@
                 <option value="week">Selected week</option>
                 <option value="month">Last 4 loaded weeks</option>
                 <option value="season">Season to date</option>
+                <option value="offseason">Offseason movement</option>
+                <option value="draft">Draft recap</option>
               </select>
             </label>
+            <div class="recap-action-wrap">
+              <button id="copyRecapBtn" class="primary" type="button">Copy recap</button>
+            </div>
           </div>
-          <div class="button-row recap-buttons">
-            <button id="generateWeekRecapBtn" class="primary">This week</button>
-            <button id="generateMonthRecapBtn" class="secondary">This month</button>
-            <button id="generateSeasonRecapBtn" class="secondary">This season</button>
-            <button id="copyRecapBtn" class="ghost">Copy recap</button>
-          </div>
-          <p class="hint">Structured for easy pasting into ChatGPT.</p>
-          <textarea id="recapOutput" class="output" rows="22" placeholder="Generated recap package..."></textarea>
+          <textarea id="recapOutput" class="output" rows="22" aria-label="Generated recap" placeholder="Your recap will appear here automatically."></textarea>
         </section>
       </section>
 
       <section id="players" class="tab-panel">
+        <div class="page-heading">
+          <div>
+            <span class="eyebrow">Player lab</span>
+            <h2>Compare players without losing context.</h2>
+            <p>Tap any two rows. Cards and head-to-head analysis build automatically.</p>
+          </div>
+        </div>
+
         <section class="panel player-lab">
           <div class="form-grid player-controls">
-            <label>League
-              <select id="playerLeagueSelect"></select>
-            </label>
             <label>Stats season
               <select id="playerStatsSeasonSelect">
                 <option value="auto">Best available</option>
               </select>
             </label>
             <label>Player A
-              <input id="playerCompareA" list="playerOptions" placeholder="Search first player" />
+              <input id="playerCompareA" type="text" list="playerOptions" autocomplete="off" placeholder="Search first player">
             </label>
             <label>Player B
-              <input id="playerCompareB" list="playerOptions" placeholder="Search second player" />
+              <input id="playerCompareB" type="text" list="playerOptions" autocomplete="off" placeholder="Search second player">
             </label>
           </div>
-          <div class="button-row">
-            <button id="buildPlayerCompareBtn" class="primary">Build cards</button>
-            <button id="swapPlayerCompareBtn" class="secondary">Swap</button>
-            <button id="clearPlayerCompareBtn" class="ghost">Clear</button>
+          <div class="button-row player-compare-actions">
+            <button id="swapPlayerCompareBtn" class="secondary" type="button">Swap players</button>
+            <button id="clearPlayerCompareBtn" class="ghost" type="button">Clear comparison</button>
           </div>
-          <p class="hint">Simple player cards for quick comparison.</p>
+          <div id="compareSelectionSlots" class="compare-selection-slots" aria-live="polite"></div>
         </section>
 
         <section id="playerCompareOutput" class="player-compare-output"></section>
 
         <section class="panel">
-          <h3>Player values</h3>
-          <div class="form-grid player-controls compact-controls">
-            <label>Search table
-              <input id="playerValueSearch" placeholder="Player name, team, or position" />
+          <div class="panel-heading-row compact-heading-row">
+            <div><span class="panel-kicker">League market</span><h3>Player values</h3></div>
+          </div>
+          <div class="form-grid player-toolbar-controls">
+            <label>Search
+              <input id="playerValueSearch" type="text" autocomplete="off" placeholder="Player name, team, or position">
             </label>
             <label>Position
               <select id="playerPositionFilter">
-                <option value="ALL">All</option>
+                <option value="ALL">All positions</option>
                 <option>QB</option><option>RB</option><option>WR</option><option>TE</option>
                 <option>DL</option><option>LB</option><option>DB</option><option>K</option><option>DEF</option>
-              </select>
-            </label>
-            <label>Quick action
-              <select id="playerTableClickTarget">
-                <option value="A">Table click loads Player A</option>
-                <option value="B">Table click loads Player B</option>
               </select>
             </label>
           </div>
@@ -222,47 +287,82 @@
       </section>
 
       <section id="settings" class="tab-panel">
-        <section class="panel">
-          <h3>Model settings</h3>
-          <div class="settings-grid">
-            <label>Age/dynasty weight
-              <input id="ageWeight" type="range" min="0" max="2" step="0.1" value="1" />
-              <span id="ageWeightValue">1.0x</span>
-            </label>
-            <label>Recent production weight
-              <input id="recentWeight" type="range" min="0" max="2" step="0.1" value="1" />
-              <span id="recentWeightValue">1.0x</span>
-            </label>
-            <label>Projection weight
-              <input id="projectionWeight" type="range" min="0" max="2" step="0.1" value="1" />
-              <span id="projectionWeightValue">1.0x</span>
-            </label>
-            <label>Efficiency weight
-              <input id="efficiencyWeight" type="range" min="0" max="2" step="0.1" value="1" />
-              <span id="efficiencyWeightValue">1.0x</span>
-            </label>
-            <label>Team need weight
-              <input id="needWeight" type="range" min="0" max="2" step="0.1" value="1" />
-              <span id="needWeightValue">1.0x</span>
-            </label>
-            <label>Draft pick aggressiveness
-              <input id="pickWeight" type="range" min="0.5" max="1.8" step="0.1" value="1" />
-              <span id="pickWeightValue">1.0x</span>
-            </label>
+        <div class="page-heading">
+          <div>
+            <span class="eyebrow">Settings</span>
+            <h2>Leagues, data, and model controls.</h2>
+            <p>Routine controls stay out of the way until you need them.</p>
           </div>
-          <div class="button-row">
-            <button id="saveSettingsBtn" class="primary">Save settings</button>
-            <button id="resetSettingsBtn" class="ghost">Reset settings</button>
-          </div>
-        </section>
+        </div>
+
+        <div class="settings-layout">
+          <section class="panel league-management-panel">
+            <div class="panel-heading-row compact-heading-row">
+              <div><span class="panel-kicker">League management</span><h3>Saved leagues</h3></div>
+            </div>
+            <label for="leagueIdInput">Add a Sleeper league ID</label>
+            <div class="league-add-row">
+              <input id="leagueIdInput" type="text" inputmode="numeric" autocomplete="off" placeholder="Sleeper league ID">
+              <button id="addLeagueIdBtn" class="primary" type="button">Add league</button>
+            </div>
+            <p class="hint">Public Sleeper data only. Saved leagues load automatically on this device.</p>
+            <div id="loadedLeagues" class="league-list empty">No leagues loaded.</div>
+            <div class="button-row settings-data-actions">
+              <button id="exportDataBtn" class="secondary" type="button">Export data</button>
+              <button id="clearBtn" class="ghost danger-ghost" type="button">Clear saved leagues</button>
+            </div>
+            <details class="status-details">
+              <summary>Data activity</summary>
+              <div id="statusLog" class="status-log" aria-live="polite">Ready.</div>
+            </details>
+          </section>
+
+          <section class="panel model-settings-panel">
+            <div class="panel-heading-row compact-heading-row">
+              <div><span class="panel-kicker">Applies automatically</span><h3>Value model</h3></div>
+              <span id="modelSaveStatus" class="auto-note">Saved</span>
+            </div>
+            <div class="settings-grid">
+              <label>Age/dynasty weight
+                <input id="ageWeight" type="range" min="0" max="2" step="0.1" value="1">
+                <span id="ageWeightValue">1.0x</span>
+              </label>
+              <label>Recent production weight
+                <input id="recentWeight" type="range" min="0" max="2" step="0.1" value="1">
+                <span id="recentWeightValue">1.0x</span>
+              </label>
+              <label>Projection weight
+                <input id="projectionWeight" type="range" min="0" max="2" step="0.1" value="1">
+                <span id="projectionWeightValue">1.0x</span>
+              </label>
+              <label>Efficiency weight
+                <input id="efficiencyWeight" type="range" min="0" max="2" step="0.1" value="1">
+                <span id="efficiencyWeightValue">1.0x</span>
+              </label>
+              <label>Team need weight
+                <input id="needWeight" type="range" min="0" max="2" step="0.1" value="1">
+                <span id="needWeightValue">1.0x</span>
+              </label>
+              <label>Draft pick aggressiveness
+                <input id="pickWeight" type="range" min="0.5" max="1.8" step="0.1" value="1">
+                <span id="pickWeightValue">1.0x</span>
+              </label>
+            </div>
+            <div class="button-row">
+              <button id="resetSettingsBtn" class="ghost" type="button">Reset model defaults</button>
+            </div>
+          </section>
+        </div>
 
         <section class="panel">
-          <h3>How it works</h3>
+          <div class="panel-heading-row compact-heading-row">
+            <div><span class="panel-kicker">Methodology</span><h3>How it works</h3></div>
+          </div>
           <div class="model-copy">
             <p><strong>Player value</strong> starts with format-specific Sleeper ADP, then blends league-scored projections, value over replacement, verified production, efficiency, age, and availability.</p>
             <p><strong>Draft pick value</strong> uses round-specific early, middle, and late bands, applies a future-year discount, and estimates draft slot from the original roster’s projected strength.</p>
             <p><strong>Trade fairness</strong> applies elite-asset scarcity and package consolidation before comparing market value. Team fit is shown separately from price using each roster’s projected lineup and depth before and after the deal.</p>
-            <p><strong>Limitations:</strong> this does not know private trade talks, player news context, contract leagues, or off-platform draft capital. Use it as a decision aid, not a final authority.</p>
+            <p><strong>Limitations:</strong> Sleeper Shield does not know private trade talks, breaking-news context, contract leagues, or off-platform draft capital. Use it as a decision aid, not a final authority.</p>
           </div>
         </section>
       </section>
