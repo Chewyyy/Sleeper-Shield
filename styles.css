@@ -380,7 +380,7 @@ td small { display: block; color: var(--muted); }
 .badge.warn { color: var(--warn); background: var(--warn-soft); border-color: rgba(255,184,77,0.28); }
 .badge.bad { color: var(--bad); background: var(--bad-soft); border-color: rgba(255,95,109,0.28); }
 
-.trade-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
+.trade-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
 .verdict { padding: 16px; margin-bottom: 14px; }
 .verdict strong { display: block; margin-bottom: 5px; font-size: 1.04rem; }
 .verdict.good { border-color: rgba(53,208,127,0.34); background: var(--good-soft); }
@@ -633,7 +633,7 @@ input[type="range"] { min-height: 28px; padding: 0; accent-color: var(--accent-s
   .pick-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
   .pick-controls button { grid-column: 1 / -1; }
   .asset-card { align-items: flex-start; }
-  .trade-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .trade-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .trade-summary .metric { min-height: 70px; }
   .table-wrap { border-radius: 16px; -webkit-overflow-scrolling: touch; }
   table { min-width: 560px; font-size: 0.86rem; }

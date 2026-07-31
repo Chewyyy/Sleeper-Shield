@@ -4,6 +4,7 @@
 
 const API_BASE = 'https://api.sleeper.app/v1';
 const API_STATS_BASE = 'https://api.sleeper.com/stats/nfl/player';
+const API_PROJECTIONS_BASE = 'https://api.sleeper.com/projections/nfl';
 const STORAGE_KEYS = {
   leagues: 'sts.leagueIds',
   selectedLeague: 'sts.selectedLeagueId',
@@ -13,12 +14,32 @@ const STORAGE_KEYS = {
 const DEFAULT_SETTINGS = {
   ageWeight: 1,
   recentWeight: 1,
+  projectionWeight: 1,
+  efficiencyWeight: 1,
   needWeight: 1,
   pickWeight: 1
 };
 
 const POSITION_ORDER = ['QB', 'RB', 'WR', 'TE', 'DL', 'LB', 'DB', 'K', 'DEF'];
-const PICK_BASE_VALUES = { 1: 4200, 2: 1600, 3: 650, 4: 275, 5: 110, 6: 50 };
+const POSITION_ALIASES = {
+  DE: 'DL', DT: 'DL', NT: 'DL', EDGE: 'DL',
+  ILB: 'LB', OLB: 'LB', MLB: 'LB',
+  CB: 'DB', S: 'DB', FS: 'DB', SS: 'DB'
+};
+const MARKET_VALUE_CURVE = [
+  [1, 10000], [3, 9600], [6, 9100], [12, 8300], [24, 7100], [36, 6100],
+  [50, 5200], [75, 4100], [100, 3300], [150, 2300], [200, 1600],
+  [300, 850], [400, 450], [600, 180], [1000, 60]
+];
+const PICK_VALUE_BANDS = {
+  1: { early: 7800, mid: 5250, late: 3850 },
+  2: { early: 3250, mid: 2200, late: 1450 },
+  3: { early: 1400, mid: 850, late: 500 },
+  4: { early: 700, mid: 400, late: 225 },
+  5: { early: 350, mid: 190, late: 100 },
+  6: { early: 180, mid: 95, late: 50 }
+};
+const POSITION_VALUE_CAPS = { K: 750, DEF: 950 };
 const FLEX_SLOTS = new Set(['FLEX', 'REC_FLEX', 'WRRB_FLEX', 'WRT', 'RB_WR_TE']);
 const SUPER_FLEX_SLOTS = new Set(['SUPER_FLEX', 'SUPERFLEX', 'OP']);
 const IDP_FLEX_SLOTS = new Set(['IDP_FLEX', 'DL_LB_DB']);
@@ -40,67 +61,11 @@ const POSITION_AGE_CURVES = {
 };
 
 
-// KTC-style dynasty market anchors. These are intentionally offline, approximate anchors, not a live KTC scrape.
-// They give the app a dynasty-market spine so stat-efficient players cannot leapfrog higher-value assets solely from PPG.
-const KTC_STYLE_MARKET_ANCHORS = {
-  'josh allen': 9985,
-  'bijan robinson': 9980,
-  'jamar chase': 9960,
-  'ja\'marr chase': 9960,
-  'jahmyr gibbs': 9880,
-  'jaxon smith njigba': 9630,
-  'jaxon smith-njigba': 9630,
-  'drake maye': 9420,
-  'puka nacua': 8710,
-  'brock bowers': 8110,
-  'caleb williams': 8030,
-  'amon ra st brown': 7900,
-  'amon-ra st. brown': 7900,
-  'amon-ra st brown': 7900,
-  'jayden daniels': 7840,
-  'justin jefferson': 7680,
-  'ashton jeanty': 7680,
-  'lamar jackson': 7640,
-  'malik nabers': 7490,
-  'joe burrow': 7440,
-  'trey mcbride': 7380,
-  'patrick mahomes': 7350,
-  'jalen hurts': 7300,
-  'ceedee lamb': 7150,
-  'c d lamb': 7150,
-  'cj stroud': 7000,
-  'c.j. stroud': 7000,
-  'justin herbert': 6900,
-  'malik washington': 2500,
-  'kyler murray': 6350,
-  'jordan love': 6250,
-  'anthony richardson': 5900,
-  'bo nix': 5850,
-  'baker mayfield': 5600,
-  'brock purdy': 5450,
-  'dak prescott': 5350,
-  'tua tagovailoa': 5200,
-  'jared goff': 5000,
-  'trevor lawrence': 4900,
-  'sam darnold': 3500,
-  'matthew stafford': 3000,
-  'aaron rodgers': 1200
-};
-
-const KTC_STYLE_QB_CEILING_BY_ANCHOR = [
-  { maxAnchor: 99999, ceiling: 9999 },
-  { maxAnchor: 9000, ceiling: 9650 },
-  { maxAnchor: 8000, ceiling: 8750 },
-  { maxAnchor: 7000, ceiling: 7900 },
-  { maxAnchor: 6000, ceiling: 7050 },
-  { maxAnchor: 5000, ceiling: 6100 },
-  { maxAnchor: 4000, ceiling: 5150 },
-  { maxAnchor: 0, ceiling: 4300 }
-];
-
 const state = {
   nflState: null,
   players: {},
+  projections: new Map(),
+  projectionSeason: null,
   playerSearch: [],
   leagues: [],
   savedLeagueIds: loadSavedLeagueIds(),
@@ -194,19 +159,30 @@ function playerName(pid) {
   return [p.first_name, p.last_name].filter(Boolean).join(' ') || p.search_full_name || String(pid);
 }
 
+function normalizePosition(position) {
+  const pos = String(position || 'UNK').toUpperCase();
+  return POSITION_ALIASES[pos] || pos;
+}
+
 function playerPrimaryPosition(pid) {
   const p = getPlayer(pid);
   if (!p) return 'UNK';
-  if (p.position) return p.position;
-  if (Array.isArray(p.fantasy_positions) && p.fantasy_positions.length) return p.fantasy_positions[0];
+  if (p.position) return normalizePosition(p.position);
+  if (Array.isArray(p.fantasy_positions) && p.fantasy_positions.length) return normalizePosition(p.fantasy_positions[0]);
   return 'UNK';
 }
 
 function playerFantasyPositions(pid) {
   const p = getPlayer(pid);
   const positions = new Set();
-  if (p?.position) positions.add(p.position);
-  if (Array.isArray(p?.fantasy_positions)) p.fantasy_positions.forEach(pos => positions.add(pos));
+  if (p?.position) {
+    positions.add(String(p.position).toUpperCase());
+    positions.add(normalizePosition(p.position));
+  }
+  if (Array.isArray(p?.fantasy_positions)) p.fantasy_positions.forEach(pos => {
+    positions.add(String(pos).toUpperCase());
+    positions.add(normalizePosition(pos));
+  });
   return [...positions];
 }
 
@@ -272,15 +248,16 @@ function currentSeasonNumber(league) {
   return Number(league?.season || state.nflState?.season || new Date().getFullYear());
 }
 
+function activeValuationSeason(league) {
+  return Number(state.nflState?.league_season || state.nflState?.season || league?.season || new Date().getFullYear());
+}
+
 function isDynastyLeague(league) {
   const settings = league.settings || {};
-  return Boolean(
-    settings.taxi_slots ||
-    settings.reserve_slots ||
-    settings.type === 2 ||
-    String(league.name || '').toLowerCase().includes('dynasty') ||
-    (league.roster_positions || []).length >= 18
-  );
+  const explicitType = Number(settings.type);
+  if (explicitType === 2) return true;
+  if (explicitType === 0 || explicitType === 1) return false;
+  return Boolean(settings.taxi_slots || String(league.name || '').toLowerCase().includes('dynasty'));
 }
 
 function isSuperflexLeague(league) {
@@ -295,7 +272,7 @@ function isTightEndPremium(league) {
 function idpSlotCount(league) {
   return (league.roster_positions || []).filter(slot => {
     const s = String(slot).toUpperCase();
-    return ['DL', 'LB', 'DB', 'IDP'].includes(s) || IDP_FLEX_SLOTS.has(s);
+    return ['DL', 'LB', 'DB', 'DE', 'DT', 'EDGE', 'ILB', 'OLB', 'CB', 'S', 'IDP'].includes(s) || IDP_FLEX_SLOTS.has(s);
   }).length;
 }
 
@@ -306,7 +283,8 @@ function activeLeaguePositions(league) {
     .filter(slot => !['BN', 'BE', 'IR', 'TAXI'].includes(slot));
 
   for (const slot of starterSlots) {
-    if (POSITION_ORDER.includes(slot)) active.add(slot);
+    const normalized = normalizePosition(slot);
+    if (POSITION_ORDER.includes(normalized)) active.add(normalized);
     if (FLEX_SLOTS.has(slot)) ['RB', 'WR', 'TE'].forEach(pos => active.add(pos));
     if (SUPER_FLEX_SLOTS.has(slot)) ['QB', 'RB', 'WR', 'TE'].forEach(pos => active.add(pos));
     if (IDP_FLEX_SLOTS.has(slot) || slot === 'IDP') ['DL', 'LB', 'DB'].forEach(pos => active.add(pos));
@@ -362,6 +340,29 @@ async function loadPlayers() {
   logStatus(`Fetched ${Object.keys(state.players).length.toLocaleString()} players.`);
 }
 
+async function loadProjections() {
+  const season = activeValuationSeason();
+  const cacheKey = `projections.nfl.${season}.regular.v2`;
+  const cached = await idbGet(cacheKey).catch(() => null);
+  const sixHours = 6 * 60 * 60 * 1000;
+  let rows = null;
+
+  if (cached?.rows && Date.now() - cached.savedAt < sixHours) {
+    rows = cached.rows;
+    logStatus(`Loaded ${season} player projections from local cache.`);
+  } else {
+    logStatus(`Fetching ${season} projections and format-specific ADP.`);
+    rows = await fetchJson(`${API_PROJECTIONS_BASE}/${season}?season_type=regular`, `${season} projections`);
+    await idbSet(cacheKey, { savedAt: Date.now(), rows }).catch(() => null);
+    logStatus(`Fetched ${Array.isArray(rows) ? rows.length.toLocaleString() : 0} projection rows.`);
+  }
+
+  state.projections = new Map((Array.isArray(rows) ? rows : [])
+    .filter(row => row?.player_id)
+    .map(row => [String(row.player_id), row]));
+  state.projectionSeason = season;
+}
+
 function preparePlayerSearch() {
   state.playerSearch = Object.values(state.players || {})
     .filter(p => p && p.player_id && (p.full_name || p.first_name || p.last_name || p.search_full_name))
@@ -390,8 +391,18 @@ function preparePlayerSearch() {
 function findPlayerFromInput(input) {
   const value = String(input || '').toLowerCase().trim();
   if (!value) return null;
-  const exact = state.playerSearch.find(p => p.label.toLowerCase() === value || p.name.toLowerCase() === value);
-  if (exact) return exact;
+  const exactLabel = state.playerSearch.find(p => p.label.toLowerCase() === value);
+  if (exactLabel) return exactLabel;
+  const exactNames = state.playerSearch
+    .filter(p => p.name.toLowerCase() === value)
+    .sort((a, b) => {
+      const playerA = getPlayer(a.id) || {};
+      const playerB = getPlayer(b.id) || {};
+      return Number(playerB.active !== false) - Number(playerA.active !== false)
+        || Number(Boolean(playerB.team)) - Number(Boolean(playerA.team))
+        || safeNumber(playerA.search_rank, 999999) - safeNumber(playerB.search_rank, 999999);
+    });
+  if (exactNames.length) return exactNames[0];
   return state.playerSearch.find(p => p.search.includes(value));
 }
 
@@ -456,14 +467,16 @@ async function loadLeague(leagueId) {
     historicalStats: new Map(),
     historyLoadedSeasons: [],
     historyLoadError: '',
+    projectionModel: null,
     valueCache: new Map(),
     teamStrength: new Map()
   };
 
   buildPlayerStats(enriched);
   await fetchHistoricalStatsForLeague(enriched);
+  buildProjectionModel(enriched);
   buildTeamStrength(enriched);
-  logStatus(`Loaded ${league.name}: ${Object.keys(matchupsByWeek).length} matchup weeks, ${Object.values(transactionsByWeek).flat().length} transactions, ${enriched.historyLoadedSeasons.length ? `${enriched.historyLoadedSeasons.join(', ')} historical stats` : 'no historical stats'}.`);
+  logStatus(`Loaded ${league.name}: ${Object.keys(matchupsByWeek).length} matchup weeks, ${Object.values(transactionsByWeek).flat().length} transactions, ${enriched.historyLoadedSeasons.length ? `${enriched.historyLoadedSeasons.join(', ')} historical stats` : 'no historical stats'}, ${roundNum((enriched.projectionModel?.coverage || 0) * 100, 0)}% roster projection coverage.`);
   return enriched;
 }
 
@@ -563,7 +576,6 @@ async function fetchHistoricalStatsForLeague(league) {
   for (const season of seasons) {
     for (const pid of playerIds) {
       tasks.push({ pid, season, seasonType: 'regular' });
-      tasks.push({ pid, season, seasonType: 'post' });
     }
   }
 
@@ -606,7 +618,7 @@ function normalizeHistoricalPayload(playerId, season, payload, league, seasonTyp
     delete raw.stats;
     const week = Number(raw.week || raw.game_week || raw.display_week || key);
     const stats = value?.stats && typeof value.stats === 'object' ? value.stats : raw;
-    const points = fantasyPointsFromStats(stats, league.scoring_settings || {});
+    const points = fantasyPointsFromStats(stats, league.scoring_settings || {}, playerPrimaryPosition(playerId));
     return {
       playerId: String(playerId),
       season: Number(raw.season || season),
@@ -620,7 +632,7 @@ function normalizeHistoricalPayload(playerId, season, payload, league, seasonTyp
   }).filter(row => row.week && Number.isFinite(row.points) && historicalStatLinePlayed(row.stats, row.points));
 }
 
-function fantasyPointsFromStats(stats = {}, scoring = {}) {
+function fantasyPointsFromStats(stats = {}, scoring = {}, position = 'UNK', options = {}) {
   let total = 0;
   for (const [key, value] of Object.entries(scoring || {})) {
     const multiplier = Number(value);
@@ -628,14 +640,25 @@ function fantasyPointsFromStats(stats = {}, scoring = {}) {
     total += safeNumber(stats[key]) * multiplier;
   }
 
-  const bonusRules = [
-    ['bonus_pass_yd_300', 'pass_yd', 300], ['bonus_pass_yd_400', 'pass_yd', 400],
-    ['bonus_rush_yd_100', 'rush_yd', 100], ['bonus_rush_yd_200', 'rush_yd', 200],
-    ['bonus_rec_yd_100', 'rec_yd', 100], ['bonus_rec_yd_200', 'rec_yd', 200]
-  ];
-  for (const [bonusKey, statKey, threshold] of bonusRules) {
-    if (safeNumber(scoring[bonusKey]) && safeNumber(stats[statKey]) >= threshold && !Object.prototype.hasOwnProperty.call(stats, bonusKey)) {
-      total += safeNumber(scoring[bonusKey]);
+  const normalizedPosition = normalizePosition(position);
+  if (normalizedPosition === 'TE' && !Object.prototype.hasOwnProperty.call(stats, 'bonus_rec_te')) {
+    const teReceptionBonus = safeNumber(scoring.bonus_rec_te ?? scoring.rec_te, 0);
+    total += safeNumber(stats.rec, 0) * teReceptionBonus;
+  }
+
+  // Per-game threshold bonuses are exact for weekly rows. A season projection cannot
+  // reliably predict how often the threshold will be crossed, so it intentionally
+  // excludes them instead of pretending a season total earned the bonus once.
+  if (!options.seasonProjection) {
+    const bonusRules = [
+      ['bonus_pass_yd_300', 'pass_yd', 300], ['bonus_pass_yd_400', 'pass_yd', 400],
+      ['bonus_rush_yd_100', 'rush_yd', 100], ['bonus_rush_yd_200', 'rush_yd', 200],
+      ['bonus_rec_yd_100', 'rec_yd', 100], ['bonus_rec_yd_200', 'rec_yd', 200]
+    ];
+    for (const [bonusKey, statKey, threshold] of bonusRules) {
+      if (safeNumber(scoring[bonusKey]) && safeNumber(stats[statKey]) >= threshold && !Object.prototype.hasOwnProperty.call(stats, bonusKey)) {
+        total += safeNumber(scoring[bonusKey]);
+      }
     }
   }
 
@@ -733,7 +756,237 @@ function displayRecordForPlayer(league, playerId) {
   return productionRecord(league, playerId) || blankStatRecord(playerId);
 }
 
+function clamp01(value) {
+  return clampNumber(value, 0, 1);
+}
+
+function starterDemandPerRoster(league) {
+  const demand = Object.fromEntries(POSITION_ORDER.map(pos => [pos, 0]));
+  for (const slotValue of league?.roster_positions || []) {
+    const slot = String(slotValue).toUpperCase();
+    if (['BN', 'BE', 'IR', 'TAXI'].includes(slot)) continue;
+    const normalized = normalizePosition(slot);
+    if (POSITION_ORDER.includes(normalized)) {
+      demand[normalized] += 1;
+      continue;
+    }
+    if (slot === 'REC_FLEX') {
+      demand.WR += 0.72;
+      demand.TE += 0.28;
+    } else if (FLEX_SLOTS.has(slot)) {
+      demand.RB += 0.36;
+      demand.WR += 0.49;
+      demand.TE += 0.15;
+    } else if (SUPER_FLEX_SLOTS.has(slot)) {
+      demand.QB += 0.8;
+      demand.RB += 0.08;
+      demand.WR += 0.08;
+      demand.TE += 0.04;
+    } else if (IDP_FLEX_SLOTS.has(slot) || slot === 'IDP') {
+      demand.DL += 0.3;
+      demand.LB += 0.44;
+      demand.DB += 0.26;
+    }
+  }
+  return demand;
+}
+
+function projectionGames(stats = {}) {
+  const games = safeNumber(stats.gp ?? stats.gms_active, 17);
+  return clampNumber(games || 17, 1, 17);
+}
+
+function projectionEfficiencyMetric(stats = {}, position = 'UNK', points = 0, games = 17) {
+  const pos = normalizePosition(position);
+  const perGame = points / Math.max(1, games);
+  let opportunity = 0;
+  let score = 0.5;
+
+  if (pos === 'QB') {
+    const attempts = safeNumber(stats.pass_att);
+    const rushAttempts = safeNumber(stats.rush_att);
+    const ypa = attempts ? safeNumber(stats.pass_yd) / attempts : 0;
+    const tdRate = attempts ? safeNumber(stats.pass_td) / attempts : 0;
+    const intRate = attempts ? safeNumber(stats.pass_int) / attempts : 0.05;
+    const rushYardsPerGame = safeNumber(stats.rush_yd) / Math.max(1, games);
+    score = clamp01((ypa - 5.5) / 3.5) * 0.34
+      + clamp01((tdRate - 0.025) / 0.05) * 0.26
+      + (1 - clamp01((intRate - 0.01) / 0.04)) * 0.2
+      + clamp01(rushYardsPerGame / 45) * 0.2;
+    opportunity = attempts + rushAttempts;
+    return { raw: score, reliability: clamp01(opportunity / 420), opportunity };
+  }
+
+  if (pos === 'RB') {
+    const rushes = safeNumber(stats.rush_att);
+    const receptions = safeNumber(stats.rec);
+    const touches = rushes + receptions;
+    const yardsPerTouch = touches ? (safeNumber(stats.rush_yd) + safeNumber(stats.rec_yd)) / touches : 0;
+    const pointsPerTouch = touches ? points / touches : 0;
+    const receivingShare = touches ? receptions / touches : 0;
+    const touchdownRate = touches ? (safeNumber(stats.rush_td) + safeNumber(stats.rec_td)) / touches : 0;
+    score = clamp01((yardsPerTouch - 3.2) / 3.2) * 0.34
+      + clamp01((pointsPerTouch - 0.45) / 0.85) * 0.34
+      + clamp01(receivingShare / 0.35) * 0.16
+      + clamp01(touchdownRate / 0.07) * 0.16;
+    opportunity = touches;
+    return { raw: score, reliability: clamp01(opportunity / 220), opportunity };
+  }
+
+  if (pos === 'WR' || pos === 'TE') {
+    const receptions = safeNumber(stats.rec);
+    const reportedTargets = safeNumber(stats.rec_tgt ?? stats.targets);
+    const targets = reportedTargets || (receptions ? receptions / (pos === 'TE' ? 0.67 : 0.64) : 0);
+    const yardsPerTarget = targets ? safeNumber(stats.rec_yd) / targets : 0;
+    const catchRate = reportedTargets && targets ? receptions / targets : (targets ? (pos === 'TE' ? 0.67 : 0.64) : 0);
+    const pointsPerTarget = targets ? points / targets : 0;
+    const touchdownRate = targets ? safeNumber(stats.rec_td) / targets : 0;
+    score = clamp01((yardsPerTarget - 5) / 6.5) * 0.35
+      + clamp01((catchRate - 0.45) / 0.38) * 0.2
+      + clamp01((pointsPerTarget - 0.7) / 2) * 0.3
+      + clamp01(touchdownRate / 0.11) * 0.15;
+    opportunity = reportedTargets || receptions;
+    return { raw: score, reliability: clamp01(opportunity / (pos === 'TE' ? 55 : 70)), opportunity };
+  }
+
+  if (['DL', 'LB', 'DB'].includes(pos)) {
+    const tackles = safeNumber(stats.idp_tkl_solo) + safeNumber(stats.idp_tkl_ast);
+    const impactPlays = safeNumber(stats.idp_sack) + safeNumber(stats.idp_int)
+      + safeNumber(stats.idp_ff) + safeNumber(stats.idp_fum_rec) + safeNumber(stats.idp_pass_def) * 0.35;
+    score = clamp01((tackles / Math.max(1, games) - 2) / 7) * 0.58
+      + clamp01((impactPlays / Math.max(1, games)) / 1.4) * 0.27
+      + clamp01(perGame / 18) * 0.15;
+    opportunity = games;
+    return { raw: score, reliability: clamp01(games / 12), opportunity };
+  }
+
+  return { raw: 0.5, reliability: points ? 0.55 : 0, opportunity: games };
+}
+
+function percentileOf(value, values = []) {
+  const sorted = values.filter(Number.isFinite).slice().sort((a, b) => a - b);
+  if (!sorted.length || !Number.isFinite(value)) return 0.5;
+  const below = sorted.filter(item => item < value).length;
+  const equal = sorted.filter(item => item === value).length;
+  return clamp01((below + equal * 0.5) / sorted.length);
+}
+
+function buildProjectionModel(league) {
+  const players = new Map();
+  const pools = Object.fromEntries(POSITION_ORDER.map(pos => [pos, []]));
+  const rostered = new Set(rosteredPlayerIds(league));
+  const activePositions = activeLeaguePositions(league);
+
+  for (const [playerId, row] of state.projections.entries()) {
+    const player = getPlayer(playerId);
+    const position = playerPrimaryPosition(playerId);
+    if (!POSITION_ORDER.includes(position) || !activePositions.has(position)) continue;
+    if (player?.active === false && !rostered.has(playerId)) continue;
+    if (!player?.team && !rostered.has(playerId) && position !== 'DEF') continue;
+    const stats = row?.stats || {};
+    const games = projectionGames(stats);
+    const points = fantasyPointsFromStats(stats, league.scoring_settings || {}, position, { seasonProjection: true });
+    if (!Number.isFinite(points) || points <= 0) continue;
+    const ppg = points / games;
+    const efficiency = projectionEfficiencyMetric(stats, position, points, games);
+    const detail = {
+      playerId: String(playerId), position, season: state.projectionSeason,
+      points: roundNum(points, 2), games, ppg: roundNum(ppg, 3),
+      efficiencyRaw: efficiency.raw, efficiencyReliability: efficiency.reliability,
+      opportunity: efficiency.opportunity, stats, row
+    };
+    players.set(String(playerId), detail);
+    pools[position].push(detail);
+  }
+
+  const teamCount = Math.max(1, safeNumber(league.total_rosters, league.rosters?.length || 1));
+  const perRosterDemand = starterDemandPerRoster(league);
+  const replacementByPosition = {};
+  const demandByPosition = {};
+
+  for (const position of POSITION_ORDER) {
+    const pool = pools[position].sort((a, b) => b.ppg - a.ppg);
+    const demand = Math.max(0, Math.round(teamCount * safeNumber(perRosterDemand[position])));
+    demandByPosition[position] = demand;
+    const replacementIndex = pool.length ? clampNumber(Math.max(1, Math.ceil(demand * 1.08)) - 1, 0, pool.length - 1) : 0;
+    const replacement = pool[replacementIndex]?.ppg || 0;
+    replacementByPosition[position] = roundNum(replacement, 3);
+    const efficiencyValues = pool.map(item => item.efficiencyRaw);
+
+    pool.forEach((item, index) => {
+      item.positionRank = index + 1;
+      item.positionPool = pool.length;
+      item.percentile = pool.length === 1 ? 1 : 1 - index / (pool.length - 1);
+      item.efficiencyPercentile = percentileOf(item.efficiencyRaw, efficiencyValues);
+      item.replacementPpg = replacement;
+      item.vorp = roundNum(item.ppg - replacement, 3);
+      item.starterDemand = demand;
+    });
+  }
+
+  const eligibleRostered = [...rostered].filter(playerId => activePositions.has(playerPrimaryPosition(playerId)));
+  const projectedRostered = eligibleRostered.filter(playerId => players.has(playerId));
+  league.projectionModel = {
+    season: state.projectionSeason,
+    players,
+    replacementByPosition,
+    demandByPosition,
+    coverage: eligibleRostered.length ? projectedRostered.length / eligibleRostered.length : 0
+  };
+  league.valueCache?.clear();
+  return league.projectionModel;
+}
+
+function productionPpgSignal(league, playerId) {
+  const rec = productionRecord(league, playerId);
+  return recordHasGames(rec) ? { ppg: safeNumber(rec.ppg), games: safeNumber(rec.games), rec } : null;
+}
+
+function forecastForPlayer(league, playerId) {
+  const projection = league.projectionModel?.players?.get(String(playerId)) || null;
+  const production = productionPpgSignal(league, playerId);
+  if (!projection && !production) {
+    return { ppg: 0, projection, production, confidence: 0.15, projectionShare: 0 };
+  }
+  if (!projection) {
+    return { ppg: production.ppg, projection, production, confidence: clampNumber(0.35 + production.games / 40, 0.35, 0.7), projectionShare: 0 };
+  }
+  if (!production) {
+    return { ppg: projection.ppg, projection, production, confidence: 0.7, projectionShare: 1 };
+  }
+
+  const currentWeeks = safeNumber(league.playerStats?.get(String(playerId))?.games, 0);
+  const baseProjectionWeight = currentWeeks >= 8 ? 0.5 : currentWeeks >= 4 ? 0.58 : 0.72;
+  const projectionWeight = baseProjectionWeight * clampNumber(state.settings.projectionWeight, 0, 2);
+  const productionWeight = (1 - baseProjectionWeight) * clampNumber(state.settings.recentWeight, 0, 2);
+  const totalWeight = projectionWeight + productionWeight || 1;
+  const projectionShare = projectionWeight / totalWeight;
+  const ppg = projection.ppg * projectionShare + production.ppg * (1 - projectionShare);
+  const sampleConfidence = clamp01(production.games / 12);
+  return {
+    ppg: roundNum(ppg, 3), projection, production,
+    confidence: clampNumber(0.62 + sampleConfidence * 0.25, 0.62, 0.9),
+    projectionShare
+  };
+}
+
+function projectionIntrinsicValue(league, playerId, forecast = forecastForPlayer(league, playerId)) {
+  const position = playerPrimaryPosition(playerId);
+  const projection = forecast.projection;
+  const replacement = projection?.replacementPpg ?? league.projectionModel?.replacementByPosition?.[position] ?? 0;
+  const demand = Math.max(1, projection?.starterDemand || league.projectionModel?.demandByPosition?.[position] || 1);
+  const rank = projection?.positionRank || demand + 1;
+  const starterStrength = clamp01((demand + 1 - rank) / demand);
+  const percentile = projection?.percentile ?? positionPercentile(league, playerId);
+  const vorp = Math.max(0, forecast.ppg - replacement);
+  const scales = { QB: 300, RB: 340, WR: 320, TE: 380, DL: 220, LB: 220, DB: 210, K: 90, DEF: 90 };
+  const value = 200 + starterStrength * 4300 + vorp * (scales[position] || 220) + Math.pow(clamp01(percentile), 4) * 900;
+  return roundNum(clampNumber(value, 60, 9600), 0);
+}
+
 function positionPercentile(league, playerId) {
+  const projection = league.projectionModel?.players?.get(String(playerId));
+  if (projection) return projection.percentile;
   const pos = playerPrimaryPosition(playerId);
   const rec = productionRecord(league, playerId);
   const ppg = rec?.ppg || 0;
@@ -749,149 +1002,80 @@ function positionPercentile(league, playerId) {
   return below / values.length;
 }
 
-function ageAdjustment(player, league) {
-  if (!player || !player.age || !isDynastyLeague(league)) return 0;
-  const age = safeNumber(player.age, 0);
-  const pos = player.position || 'UNK';
-  let adj = 0;
-  if (pos === 'QB') adj = age <= 24 ? 10 : age <= 31 ? 8 : age <= 36 ? 2 : -8;
-  else if (pos === 'RB') adj = age <= 23 ? 12 : age <= 26 ? 8 : age <= 28 ? -3 : -15;
-  else if (pos === 'WR') adj = age <= 24 ? 10 : age <= 28 ? 8 : age <= 31 ? 0 : -9;
-  else if (pos === 'TE') adj = age <= 24 ? 8 : age <= 30 ? 7 : age <= 33 ? 0 : -8;
-  else if (['DL', 'LB', 'DB'].includes(pos)) adj = age <= 27 ? 5 : age <= 31 ? 2 : -5;
-  return adj * state.settings.ageWeight;
-}
-
-function statusAdjustment(player) {
-  const status = String(player?.injury_status || player?.status || '').toLowerCase();
-  if (!status) return 0;
-  if (['ir', 'out', 'pup', 'suspended'].some(s => status.includes(s))) return -18;
-  if (status.includes('doubtful')) return -10;
-  if (status.includes('questionable')) return -4;
-  if (status.includes('inactive')) return -8;
-  return 0;
-}
-
-function dynastyMarketNameKey(name = '') {
-  return String(name || '')
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9]+/g, ' ')
-    .trim();
-}
-
-function playerMarketAnchorKey(player, playerId = '') {
-  const direct = dynastyMarketNameKey(player?.full_name || player?.metadata?.full_name || player?.search_full_name || '');
-  if (direct) return direct;
-  return dynastyMarketNameKey(playerName(playerId));
-}
-
-function rankFallbackValue(player) {
-  const rank = safeNumber(player?.search_rank, 9999);
-  if (!rank || rank >= 9999) return 900;
-  return rankToKtcValue(rank, player?.position || 'UNK');
-}
-
 function clampNumber(value, min, max) {
   const num = safeNumber(value, 0);
   return Math.min(max, Math.max(min, num));
 }
 
-function rankToKtcValue(rank, position = 'UNK') {
-  const r = Math.max(1, safeNumber(rank, 9999));
-  // Approximate KTC-style dynasty curve: very steep at the top, then long tail.
-  let value = Math.round(9800 * Math.pow(r, -0.31));
-  value = clampNumber(value, 120, 9600);
+function marketValueFromRank(rank) {
+  const valueRank = clampNumber(rank, MARKET_VALUE_CURVE[0][0], MARKET_VALUE_CURVE.at(-1)[0]);
+  for (let index = 1; index < MARKET_VALUE_CURVE.length; index += 1) {
+    const [rightRank, rightValue] = MARKET_VALUE_CURVE[index];
+    const [leftRank, leftValue] = MARKET_VALUE_CURVE[index - 1];
+    if (valueRank <= rightRank) {
+      const progress = (valueRank - leftRank) / Math.max(1, rightRank - leftRank);
+      return roundNum(leftValue + (rightValue - leftValue) * progress, 0);
+    }
+  }
+  return MARKET_VALUE_CURVE.at(-1)[1];
+}
 
-  // Sleeper search_rank can be overly optimistic for efficient veteran QBs, so compress fallback QB anchors.
-  if (position === 'QB') {
-    if (r <= 12) value = Math.min(value, 7600);
-    else if (r <= 30) value = Math.min(value, 6500);
-    else if (r <= 60) value = Math.min(value, 5600);
-    else if (r <= 100) value = Math.min(value, 4800);
-    else value = Math.min(value, 4000);
+function scoringAdpSuffix(league) {
+  const receptions = safeNumber(league?.scoring_settings?.rec, 0);
+  if (receptions >= 0.75) return 'ppr';
+  if (receptions >= 0.25) return 'half_ppr';
+  return 'std';
+}
+
+function validAdp(value) {
+  const adp = Number(value);
+  return Number.isFinite(adp) && adp > 0 && adp < 900;
+}
+
+function marketSignalForPlayer(league, playerId) {
+  const player = getPlayer(playerId) || {};
+  const position = playerPrimaryPosition(playerId);
+  const stats = state.projections.get(String(playerId))?.stats || {};
+  const dynasty = isDynastyLeague(league);
+  const superflex = isSuperflexLeague(league);
+  const suffix = scoringAdpSuffix(league);
+  let keys;
+
+  if (['DL', 'LB', 'DB'].includes(position)) {
+    keys = superflex
+      ? ['adp_idp', 'adp_dynasty_2qb', `adp_dynasty_${suffix}`]
+      : ['adp_idp_1qb', 'adp_idp', `adp_dynasty_${suffix}`];
+  } else if (dynasty) {
+    keys = superflex
+      ? ['adp_dynasty_2qb', `adp_dynasty_${suffix}`, 'adp_dynasty']
+      : [`adp_dynasty_${suffix}`, 'adp_dynasty', 'adp_dynasty_2qb'];
+  } else {
+    keys = superflex ? ['adp_2qb', `adp_${suffix}`] : [`adp_${suffix}`, 'adp_half_ppr', 'adp_std'];
   }
 
-  return value;
-}
+  const selectedKey = keys.find(key => validAdp(stats[key]));
+  if (selectedKey) {
+    const adp = safeNumber(stats[selectedKey]);
+    return {
+      value: marketValueFromRank(adp), adp, key: selectedKey,
+      source: selectedKey.replaceAll('_', ' ').toUpperCase(), reliability: 0.9,
+      isDynastyAdp: selectedKey.includes('dynasty')
+    };
+  }
 
-function ktcStyleMarketAnchor(player, playerId = '') {
-  const pos = player?.position || playerPrimaryPosition(playerId) || 'UNK';
-  const key = playerMarketAnchorKey(player, playerId);
-  const anchored = KTC_STYLE_MARKET_ANCHORS[key];
-  if (Number.isFinite(anchored)) return anchored;
+  const searchRank = safeNumber(player.search_rank, 9999);
+  if (searchRank > 0 && searchRank < 1000) {
+    return {
+      value: marketValueFromRank(searchRank), adp: searchRank, key: 'search_rank',
+      source: 'Sleeper search rank fallback', reliability: 0.48, isDynastyAdp: false
+    };
+  }
 
-  const rank = safeNumber(player?.search_rank, 9999);
-  let value = rankToKtcValue(rank, pos);
-
-  // Dynasty positional smoothing when no named market anchor is available.
-  const age = safeNumber(player?.age, 0);
-  if (pos === 'RB' && age && age > 28) value *= 0.72;
-  if (pos === 'WR' && age && age > 31) value *= 0.76;
-  if (pos === 'TE' && age && age <= 25) value *= 1.08;
-  if (pos === 'QB' && age && age <= 25) value *= 1.05;
-  if (['K', 'DEF'].includes(pos)) value = Math.min(value, 450);
-  if (['DL', 'LB', 'DB'].includes(pos)) value = Math.min(value, 1800);
-
-  return Math.round(clampNumber(value, 80, 9800));
-}
-
-function marketAnchorValue(player, position = '', playerId = '') {
-  return ktcStyleMarketAnchor({ ...(player || {}), position: position || player?.position }, playerId);
-}
-
-function sumStatsFromRecord(rec, keys = []) {
-  return (rec?.weeks || []).reduce((sum, row) => {
-    const stats = row?.stats || {};
-    const found = keys.find(key => stats?.[key] !== undefined && stats?.[key] !== null && stats?.[key] !== '');
-    return sum + safeNumber(found ? stats[found] : 0, 0);
-  }, 0);
-}
-
-function qbRushingAdjustment(rec) {
-  if (!rec?.games) return 0;
-  const rushYds = sumStatsFromRecord(rec, ['rush_yd', 'rushing_yards']);
-  const rushTds = sumStatsFromRecord(rec, ['rush_td', 'rushing_touchdowns']);
-  const rushAtt = sumStatsFromRecord(rec, ['rush_att', 'rushing_attempts']);
-  const rushYdsPerGame = rushYds / rec.games;
-  const rushTdsPerGame = rushTds / rec.games;
-  const rushAttPerGame = rushAtt / rec.games;
-
-  let adj = 0;
-  adj += clampNumber(rushYdsPerGame * 10, 0, 420);
-  adj += clampNumber(rushTdsPerGame * 520, 0, 420);
-  if (rushAttPerGame >= 6) adj += 120;
-  if (rushYdsPerGame < 10 && rec.ppg < 19) adj -= 220;
-  else if (rushYdsPerGame < 15 && rec.ppg < 18) adj -= 120;
-  return clampNumber(adj, -300, 800);
-}
-
-function productionAdjustmentValue(rec, position = 'UNK') {
-  if (!rec?.games) return 0;
-  const ppg = safeNumber(rec.ppg, 0);
-  const games = safeNumber(rec.games, 0);
-  let baseline = 10;
-  let scale = 85;
-  if (position === 'QB') { baseline = 17; scale = 115; }
-  else if (position === 'RB') { baseline = 10.5; scale = 105; }
-  else if (position === 'WR') { baseline = 10; scale = 100; }
-  else if (position === 'TE') { baseline = 8; scale = 115; }
-  else if (['DL', 'LB', 'DB'].includes(position)) { baseline = 8; scale = 90; }
-  const ppgAdj = clampNumber((ppg - baseline) * scale, -650, 850);
-  const samplePenalty = games < 5 ? -250 : games < 10 ? -100 : 0;
-  return ppgAdj + samplePenalty;
-}
-
-function recentAdjustmentValue(rec) {
-  if (!rec?.games) return 0;
-  const ppg = safeNumber(rec.ppg, 0);
-  const last5 = safeNumber(rec.last4Avg, ppg);
-  return clampNumber((last5 - ppg) * 65, -350, 350) * state.settings.recentWeight;
+  return { value: 0, adp: null, key: '', source: 'No market rank', reliability: 0.2, isDynastyAdp: false };
 }
 
 function ageCurveProfile(player, league) {
-  const pos = player?.position || 'UNK';
+  const pos = normalizePosition(player?.position || 'UNK');
   const curve = POSITION_AGE_CURVES[pos] || POSITION_AGE_CURVES.UNK;
   const age = safeNumber(player?.age, 0);
   if (!age || !isDynastyLeague(league)) {
@@ -945,141 +1129,97 @@ function ageCurveProfile(player, league) {
   };
 }
 
-function dynastyAgeAdjustmentValue(player, league) {
-  return ageCurveProfile(player, league).adjustment;
-}
-
-function statusAdjustmentValue(player) {
+function statusValueAdjustment(baseValue, player, league) {
   const status = String(player?.injury_status || player?.status || '').toLowerCase();
   if (!status) return 0;
-  if (['ir', 'out', 'pup', 'suspended'].some(s => status.includes(s))) return -1200;
-  if (status.includes('doubtful')) return -700;
-  if (status.includes('questionable')) return -250;
-  if (status.includes('inactive')) return -500;
-  return 0;
+  let multiplier = 1;
+  const dynasty = isDynastyLeague(league);
+  if (['ir', 'out', 'pup'].some(term => status.includes(term))) multiplier = dynasty ? 0.94 : 0.82;
+  else if (status.includes('suspended')) multiplier = dynasty ? 0.92 : 0.78;
+  else if (status.includes('doubtful')) multiplier = dynasty ? 0.98 : 0.9;
+  else if (status.includes('questionable')) multiplier = dynasty ? 0.995 : 0.97;
+  else if (status.includes('inactive')) multiplier = dynasty ? 0.97 : 0.9;
+  return roundNum(baseValue * (multiplier - 1), 0);
 }
 
-function scarcityAdjustmentValue(league, playerId) {
-  return scarcityAdjustment(league, playerId) * 85;
-}
-
-function positionPercentileAdjustmentValue(percentile, position = 'UNK') {
-  const center = position === 'QB' ? 0.65 : 0.55;
-  return clampNumber((percentile - center) * 850, -450, 450);
-}
-
-function qbCeilingForAnchor(anchor) {
-  for (const row of KTC_STYLE_QB_CEILING_BY_ANCHOR) {
-    if (anchor >= row.maxAnchor) return row.ceiling;
-  }
-  return 4300;
-}
-
-function qbValueDetail(league, playerId, player, rec, percentile) {
-  const anchor = ktcStyleMarketAnchor(player, playerId);
-  const productionAdj = productionAdjustmentValue(rec, 'QB');
-  const percentileAdj = positionPercentileAdjustmentValue(percentile, 'QB') * 0.45;
-  const recentAdj = recentAdjustmentValue(rec) * 0.45;
-  const rushingAdj = qbRushingAdjustment(rec);
-  const ageProfile = ageCurveProfile(player, league);
-  const dynastyAdj = ageProfile.adjustment * 0.55;
-  const statusAdj = statusAdjustmentValue(player);
-  const scarcityAdj = scarcityAdjustmentValue(league, playerId) * 0.25;
-  const uncapped = anchor + productionAdj + percentileAdj + recentAdj + rushingAdj + dynastyAdj + statusAdj + scarcityAdj;
-
-  // KTC-style guardrail: production can move QBs inside a market tier, but cannot jump multiple dynasty tiers.
-  const floor = Math.max(250, anchor - 950);
-  const ceiling = Math.min(qbCeilingForAnchor(anchor), anchor + 950);
-  const banded = clampNumber(uncapped, floor, ceiling);
-  return {
-    raw: banded,
-    components: {
-      marketAnchor: roundNum(anchor, 0),
-      productionAdj: roundNum(productionAdj, 0),
-      percentileAdj: roundNum(percentileAdj, 0),
-      recentAdj: roundNum(recentAdj, 0),
-      rushingAdj: roundNum(rushingAdj, 0),
-      dynastyAdj: roundNum(dynastyAdj, 0),
-      ageStage: ageProfile.stage,
-      yearsToRetirement: ageProfile.yearsToRetirement,
-      expectedPositionRetirement: ageProfile.curve?.retirement || null,
-      scarcityAdj: roundNum(scarcityAdj, 0),
-      statusAdj: roundNum(statusAdj, 0),
-      banded: roundNum(banded, 0)
-    }
-  };
-}
-
-function ktcStyleValueDetail(league, playerId, player, rec, percentile) {
-  const pos = player?.position || playerPrimaryPosition(playerId) || 'UNK';
-  const anchor = ktcStyleMarketAnchor(player, playerId);
-  const productionAdj = productionAdjustmentValue(rec, pos);
-  const percentileAdj = positionPercentileAdjustmentValue(percentile, pos);
-  const recentAdj = recentAdjustmentValue(rec);
-  const ageProfile = ageCurveProfile(player, league);
-  const dynastyAdj = ageProfile.adjustment;
-  const statusAdj = statusAdjustmentValue(player);
-  const scarcityAdj = scarcityAdjustmentValue(league, playerId);
-  const uncapped = anchor + productionAdj + percentileAdj + recentAdj + dynastyAdj + statusAdj + scarcityAdj;
-  const floor = Math.max(40, anchor - 1400);
-  const ceiling = Math.min(9999, anchor + 1400);
-  const banded = clampNumber(uncapped, floor, ceiling);
-  return {
-    raw: banded,
-    components: {
-      marketAnchor: roundNum(anchor, 0),
-      productionAdj: roundNum(productionAdj, 0),
-      percentileAdj: roundNum(percentileAdj, 0),
-      recentAdj: roundNum(recentAdj, 0),
-      dynastyAdj: roundNum(dynastyAdj, 0),
-      ageStage: ageProfile.stage,
-      yearsToRetirement: ageProfile.yearsToRetirement,
-      expectedPositionRetirement: ageProfile.curve?.retirement || null,
-      scarcityAdj: roundNum(scarcityAdj, 0),
-      statusAdj: roundNum(statusAdj, 0),
-      banded: roundNum(banded, 0)
-    }
-  };
-}
-
-function positionMultiplier(player, league) {
-  const pos = player?.position || 'UNK';
-  const superflex = isSuperflexLeague(league);
-  if (pos === 'QB') return 1;
-  if (pos === 'TE') return isTightEndPremium(league) ? 1.15 : 1;
-  if (['DL', 'LB', 'DB'].includes(pos)) return idpSlotCount(league) >= 3 ? 0.92 : 0.72;
-  if (pos === 'K' || pos === 'DEF') return 0.35;
-  return 1;
+function valueConfidenceLabel(score) {
+  if (score >= 0.78) return 'High';
+  if (score >= 0.55) return 'Medium';
+  return 'Low';
 }
 
 function playerValue(league, playerId) {
   const key = String(playerId);
   if (league.valueCache.has(key)) return league.valueCache.get(key);
-  const player = getPlayer(key);
+  const player = getPlayer(key) || {};
   const rec = productionRecord(league, key);
+  const forecast = forecastForPlayer(league, key);
+  const projection = forecast.projection;
   const percentile = positionPercentile(league, key);
-  const pos = player?.position || playerPrimaryPosition(key) || 'UNK';
+  const pos = playerPrimaryPosition(key);
+  const market = marketSignalForPlayer(league, key);
+  const intrinsic = projectionIntrinsicValue(league, key, forecast);
+  const hasFormatAdp = market.key.startsWith('adp_');
+  const baseIntrinsicWeight = hasFormatAdp ? (isDynastyLeague(league) ? 0.26 : 0.48) : (market.value ? 0.58 : 1);
+  const intrinsicWeight = market.value
+    ? clampNumber(baseIntrinsicWeight * clampNumber(state.settings.projectionWeight, 0, 2), 0, 0.78)
+    : 1;
+  const marketWeight = market.value ? 1 - intrinsicWeight : 0;
+  let raw = market.value * marketWeight + intrinsic * intrinsicWeight;
 
-  let raw;
-  let valueModel = 'production model';
-  let components = null;
+  const efficiencyCentered = projection ? (projection.efficiencyPercentile - 0.5) * 2 : 0;
+  const efficiencyAdj = efficiencyCentered * (isDynastyLeague(league) ? 300 : 450)
+    * safeNumber(projection?.efficiencyReliability, 0) * clampNumber(state.settings.efficiencyWeight, 0, 2);
+  const recentAdj = rec?.games >= 4
+    ? clampNumber((safeNumber(rec.last4Avg, rec.ppg) - safeNumber(rec.ppg)) * 42, -220, 220) * clampNumber(state.settings.recentWeight, 0, 2)
+    : 0;
+  const ageProfile = ageCurveProfile(player, league);
+  const ageScale = market.isDynastyAdp ? 0.16 : 0.48;
+  const ageAdj = ageProfile.adjustment * ageScale;
+  raw += efficiencyAdj + recentAdj + ageAdj;
+  const statusAdj = statusValueAdjustment(raw, player, league);
+  raw += statusAdj;
 
-  if (pos === 'QB') {
-    const qb = qbValueDetail(league, key, player, rec, percentile);
-    raw = qb.raw;
-    valueModel = 'KTC-style QB tier model';
-    components = qb.components;
-  } else {
-    const ktc = ktcStyleValueDetail(league, key, player, rec, percentile);
-    raw = ktc.raw * positionMultiplier(player, league);
-    valueModel = 'KTC-style market model';
-    components = ktc.components;
+  if (market.value) {
+    raw = clampNumber(raw, Math.max(30, market.value * 0.68), Math.min(9999, market.value * 1.32));
   }
-
-  const value = Math.max(1, roundNum(raw, 0));
+  if (POSITION_VALUE_CAPS[pos]) raw = Math.min(raw, POSITION_VALUE_CAPS[pos]);
+  const value = Math.max(1, roundNum(clampNumber(raw, 1, 9999), 0));
+  const dataConfidence = clampNumber(
+    market.reliability * 0.48 + forecast.confidence * 0.37 + clamp01(safeNumber(rec?.games) / 12) * 0.15,
+    0.1,
+    0.96
+  );
+  const replacementPpg = projection?.replacementPpg ?? league.projectionModel?.replacementByPosition?.[pos] ?? 0;
+  const components = {
+    marketAnchor: roundNum(market.value, 0),
+    marketWeight: roundNum(marketWeight * 100, 0),
+    marketAdp: market.adp,
+    marketSource: market.source,
+    projectionValue: intrinsic,
+    projectionWeight: roundNum(intrinsicWeight * 100, 0),
+    projectedPpg: roundNum(projection?.ppg || 0, 1),
+    forecastPpg: roundNum(forecast.ppg, 1),
+    replacementPpg: roundNum(replacementPpg, 1),
+    vorp: roundNum(forecast.ppg - replacementPpg, 1),
+    efficiencyAdj: roundNum(efficiencyAdj, 0),
+    recentAdj: roundNum(recentAdj, 0),
+    dynastyAdj: roundNum(ageAdj, 0),
+    ageStage: ageProfile.stage,
+    yearsToRetirement: ageProfile.yearsToRetirement,
+    expectedPositionRetirement: ageProfile.curve?.retirement || null,
+    statusAdj: roundNum(statusAdj, 0),
+    confidence: roundNum(dataConfidence * 100, 0)
+  };
   const detail = {
     value,
     ppg: roundNum(rec?.ppg || 0, 1),
+    projectedPpg: roundNum(projection?.ppg || 0, 1),
+    forecastPpg: roundNum(forecast.ppg, 1),
+    replacementPpg: roundNum(replacementPpg, 1),
+    vorp: roundNum(forecast.ppg - replacementPpg, 1),
+    efficiency: roundNum((projection?.efficiencyPercentile ?? 0.5) * 100, 0),
+    projectionRank: projection?.positionRank || null,
     last4: roundNum(rec?.last4Avg || 0, 1),
     starts: rec?.starts || 0,
     games: rec?.games || 0,
@@ -1089,57 +1229,69 @@ function playerValue(league, playerId) {
     status: player?.injury_status || player?.status || '',
     name: playerName(key),
     playerId: key,
-    source: rec?.source || 'rank fallback',
-    valueModel,
+    source: `${market.source}; ${projection ? `${state.projectionSeason} projection` : 'no projection'}; ${rec?.source || 'no production sample'}`,
+    valueModel: 'format ADP + league VORP',
     searchRank: player?.search_rank || '',
+    marketAdp: market.adp,
+    marketSource: market.source,
+    confidence: valueConfidenceLabel(dataConfidence),
+    confidenceScore: roundNum(dataConfidence * 100, 0),
     components
   };
   league.valueCache.set(key, detail);
   return detail;
 }
 
-function scarcityAdjustment(league, playerId) {
-  const pos = playerPrimaryPosition(playerId);
-  const pct = positionPercentile(league, playerId);
-  if (pos === 'QB' && isSuperflexLeague(league) && pct > 0.75) return 6;
-  if (pos === 'TE' && pct > 0.82) return isTightEndPremium(league) ? 13 : 8;
-  if (['RB', 'WR'].includes(pos) && pct > 0.9) return 6;
-  if (['DL', 'LB', 'DB'].includes(pos) && idpSlotCount(league) >= 3 && pct > 0.9) return 6;
-  return 0;
-}
-
 function buildTeamStrength(league) {
   league.teamStrength.clear();
   for (const roster of league.rosters || []) {
-    const rosterValue = (roster.players || []).reduce((sum, pid) => sum + playerValue(league, pid).value, 0);
-    const startersValue = (roster.starters || []).reduce((sum, pid) => sum + playerValue(league, pid).value, 0);
+    const playerIds = (roster.players || []).map(String);
+    const playerValues = playerIds.map(pid => playerValue(league, pid)).sort((a, b) => b.value - a.value);
+    const coreLimit = Math.max(12, (league.roster_positions || []).filter(slot => !['BN', 'BE', 'IR', 'TAXI'].includes(String(slot).toUpperCase())).length + 6);
+    const rosterValue = playerValues.slice(0, coreLimit).reduce((sum, detail) => sum + detail.value, 0);
+    const lineup = optimalProjectedLineupScore(league, playerIds);
+    const startersValue = lineup.selected.reduce((sum, pid) => sum + playerValue(league, pid).value, 0);
     const wins = safeNumber(roster.settings?.wins);
     const losses = safeNumber(roster.settings?.losses);
     const fpts = totalFpts(roster.settings);
     const maxpf = safeNumber(roster.settings?.ppts) + safeNumber(roster.settings?.ppts_decimal) / 100;
-    const score = startersValue * 0.5 + rosterValue * 0.25 + fpts * 0.02 + maxpf * 0.02 + wins * 7 - losses * 3;
-    league.teamStrength.set(Number(roster.roster_id), { score, rosterValue, startersValue, wins, losses, fpts, maxpf });
+    const score = lineup.total * 220 + startersValue * 0.24 + rosterValue * 0.18 + fpts * 1.2 + maxpf * 1.5 + wins * 180 - losses * 70;
+    league.teamStrength.set(Number(roster.roster_id), {
+      score, rosterValue, startersValue, projectedLineupPpg: roundNum(lineup.total, 1),
+      wins, losses, fpts, maxpf
+    });
   }
 }
 
+function interpolatePickBand(band, strengthRank) {
+  const rank = clamp01(strengthRank);
+  if (rank <= 0.5) return band.early + (band.mid - band.early) * (rank / 0.5);
+  return band.mid + (band.late - band.mid) * ((rank - 0.5) / 0.5);
+}
+
 function pickValue(league, pick) {
-  const currentSeason = currentSeasonNumber(league);
+  const currentSeason = activeValuationSeason(league);
   const season = Number(pick.season || currentSeason + 1);
   const round = Number(pick.round || 1);
   const original = Number(pick.roster_id || pick.originalRosterId || pick.original_roster_id || pick.ownerRosterId || pick.owner_id);
-  const base = PICK_BASE_VALUES[round] || Math.max(1, 10 - round);
-  const yearsOut = Math.max(1, season - currentSeason);
-  const timeFactor = Math.max(0.68, 1 - (yearsOut - 1) * 0.12);
   const strengthRank = teamStrengthRank(league, original);
-  let pickFactor = 1;
-  if (round === 1) pickFactor = strengthRank <= 0.33 ? 1.25 : strengthRank >= 0.67 ? 0.75 : 1;
-  else if (round === 2) pickFactor = strengthRank <= 0.33 ? 1.15 : strengthRank >= 0.67 ? 0.86 : 1;
-  else pickFactor = strengthRank <= 0.33 ? 1.08 : strengthRank >= 0.67 ? 0.92 : 1;
-  const value = roundNum(base * timeFactor * pickFactor * state.settings.pickWeight, 1);
+  const band = PICK_VALUE_BANDS[round] || { early: 80, mid: 45, late: 25 };
+  const base = interpolatePickBand(band, strengthRank);
+  const yearsOut = Math.max(0, season - currentSeason);
+  const timeFactors = [1, 0.9, 0.78, 0.68];
+  const timeFactor = timeFactors[yearsOut] ?? Math.max(0.52, 0.68 - (yearsOut - 3) * 0.08);
+  const formatFactor = round === 1 && !isSuperflexLeague(league) ? 0.96 : 1;
+  const value = roundNum(base * timeFactor * formatFactor * state.settings.pickWeight, 0);
+  const teamCount = Math.max(1, safeNumber(league.total_rosters, league.rosters?.length || 1));
+  const expectedSlot = roundNum(1 + strengthRank * Math.max(0, teamCount - 1), 1);
+  const range = strengthRank <= 0.33 ? 'early' : strengthRank >= 0.67 ? 'late' : 'mid';
   return {
     value,
     label: `${season} Round ${round} (${teamName(league, original)} original pick)`,
-    detail: `${strengthRank <= 0.33 ? 'projected early' : strengthRank >= 0.67 ? 'projected late' : 'projected mid'} based on roster strength`
+    detail: `projected ${range} (about ${round}.${String(Math.max(1, Math.round(expectedSlot))).padStart(2, '0')}); ${yearsOut ? `${yearsOut}-year discount applied` : 'current class'}`,
+    confidence: league.teamStrength?.has(original) ? 'Medium' : 'Low',
+    expectedSlot,
+    range
   };
 }
 
@@ -1157,14 +1309,50 @@ function assetValue(league, asset) {
   return { value: 0, label: 'Unknown asset' };
 }
 
-function sumAssets(league, assets) {
-  return assets.reduce((sum, asset) => sum + assetValue(league, asset).value, 0);
+function adjustPackageValues(entries = []) {
+  const sorted = entries.slice().sort((a, b) => b.value - a.value);
+  if (!sorted.length) return { raw: 0, adjusted: 0, adjustment: 0, premium: 0, entries: [], confidence: 0 };
+  const raw = sorted.reduce((sum, entry) => sum + entry.value, 0);
+  const topValue = sorted[0].value;
+  const adjustedEntries = sorted.map((entry, index) => {
+    if (!index) return { ...entry, packageFactor: 1, packageValue: entry.value };
+    const relativeValue = clamp01(entry.value / Math.max(1, topValue));
+    let discount = Math.min(0.16, index * 0.028 + (entry.value < 2000 ? 0.045 : 0));
+    discount *= 1 - relativeValue * 0.58;
+    if (entry.type === 'pick') discount = Math.max(0, discount - 0.025);
+    const factor = 1 - discount;
+    return { ...entry, packageFactor: factor, packageValue: entry.value * factor };
+  });
+  const top = sorted[0];
+  let premiumRate = top.value >= 9000 ? 0.055 : top.value >= 7500 ? 0.035 : top.value >= 6000 ? 0.018 : 0;
+  if (top.type === 'pick') premiumRate *= 0.4;
+  const premium = top.value * premiumRate;
+  const adjusted = adjustedEntries.reduce((sum, entry) => sum + entry.packageValue, 0) + premium;
+  const confidence = sorted.reduce((sum, entry) => sum + safeNumber(entry.confidenceScore, 60) * entry.value, 0) / Math.max(1, raw);
+  return {
+    raw: roundNum(raw, 0), adjusted: roundNum(adjusted, 0),
+    adjustment: roundNum(adjusted - raw, 0), premium: roundNum(premium, 0),
+    entries: adjustedEntries, confidence: roundNum(confidence, 0)
+  };
+}
+
+function packageValuation(league, assets = []) {
+  const entries = assets.map(asset => {
+    const detail = assetValue(league, asset);
+    return {
+      asset, type: asset.type, value: safeNumber(detail.value), detail,
+      confidenceScore: asset.type === 'player' ? safeNumber(detail.confidenceScore, 50) : 62
+    };
+  });
+  return adjustPackageValues(entries);
 }
 
 function slotEligibility(slot, playerId) {
   const s = String(slot).toUpperCase();
   const positions = new Set(playerFantasyPositions(playerId));
-  if (positions.has(s)) return true;
+  const normalizedSlot = normalizePosition(s);
+  if (positions.has(s) || positions.has(normalizedSlot)) return true;
+  if (s === 'REC_FLEX') return ['WR', 'TE'].some(pos => positions.has(pos));
   if (FLEX_SLOTS.has(s)) return ['RB', 'WR', 'TE'].some(pos => positions.has(pos));
   if (SUPER_FLEX_SLOTS.has(s)) return ['QB', 'RB', 'WR', 'TE'].some(pos => positions.has(pos));
   if (IDP_FLEX_SLOTS.has(s) || s === 'IDP') return ['DL', 'LB', 'DB', 'IDP'].some(pos => positions.has(pos));
@@ -1206,41 +1394,77 @@ function optimalStarterScore(league, playerIds, week) {
   return { total, selected };
 }
 
+function optimalProjectedLineupScore(league, playerIds = []) {
+  const starterSlots = (league.roster_positions || [])
+    .filter(slot => !['BN', 'BE', 'IR', 'TAXI'].includes(String(slot).toUpperCase()))
+    .sort((a, b) => slotRestrictiveness(a) - slotRestrictiveness(b));
+  const available = [...new Set((playerIds || []).map(String))];
+  const selected = [];
+  const bySlot = [];
+  let total = 0;
+
+  for (const slot of starterSlots) {
+    const candidates = available
+      .filter(playerId => !selected.includes(playerId) && slotEligibility(slot, playerId))
+      .map(playerId => ({ playerId, forecast: forecastForPlayer(league, playerId) }))
+      .sort((a, b) => b.forecast.ppg - a.forecast.ppg);
+    if (!candidates.length) {
+      bySlot.push({ slot, playerId: null, ppg: 0 });
+      continue;
+    }
+    const chosen = candidates[0];
+    selected.push(chosen.playerId);
+    total += chosen.forecast.ppg;
+    bySlot.push({ slot, playerId: chosen.playerId, ppg: chosen.forecast.ppg });
+  }
+  return { total: roundNum(total, 3), selected, bySlot };
+}
+
+function rosterDepthScore(league, playerIds = []) {
+  const demand = starterDemandPerRoster(league);
+  let total = 0;
+  for (const position of activeLeaguePositions(league)) {
+    const required = Math.max(1, Math.ceil(safeNumber(demand[position])));
+    const replacement = safeNumber(league.projectionModel?.replacementByPosition?.[position], 0);
+    const room = (playerIds || [])
+      .filter(playerId => playerFantasyPositions(playerId).includes(position))
+      .map(playerId => forecastForPlayer(league, playerId).ppg)
+      .filter(value => value > 0)
+      .sort((a, b) => b - a);
+    room.slice(required, required + 2).forEach((ppg, index) => {
+      total += Math.max(0, ppg - replacement) * (index ? 0.2 : 0.35);
+    });
+  }
+  return roundNum(total, 3);
+}
+
 function rosterNeedProfile(league, rosterId, overridePlayers = null) {
   const roster = league.rosterMap.get(Number(rosterId));
   const playerIds = overridePlayers || roster?.players || [];
-  const slots = league.roster_positions || [];
-  const needCounts = { QB: 0, RB: 0, WR: 0, TE: 0, DL: 0, LB: 0, DB: 0, K: 0, DEF: 0 };
-  for (const slot of slots) {
-    const s = String(slot).toUpperCase();
-    if (needCounts[s] !== undefined) needCounts[s] += 1;
-    if (FLEX_SLOTS.has(s)) { needCounts.RB += 0.34; needCounts.WR += 0.43; needCounts.TE += 0.23; }
-    if (SUPER_FLEX_SLOTS.has(s)) { needCounts.QB += 0.75; needCounts.RB += 0.1; needCounts.WR += 0.1; needCounts.TE += 0.05; }
-    if (IDP_FLEX_SLOTS.has(s)) { needCounts.DL += 0.34; needCounts.LB += 0.33; needCounts.DB += 0.33; }
-  }
-
+  const needCounts = starterDemandPerRoster(league);
   const activePositions = activeLeaguePositions(league);
   const profile = {};
   for (const pos of POSITION_ORDER) {
     const required = activePositions.has(pos) ? Math.ceil(needCounts[pos] || 0) : 0;
     if (!required) {
-      profile[pos] = { required: 0, value: 0, count: 0 };
+      profile[pos] = { required: 0, value: 0, count: 0, replacement: 0, surplus: 0 };
       continue;
     }
-    const values = playerIds
+    const forecasts = playerIds
       .filter(pid => playerFantasyPositions(pid).includes(pos))
-      .map(pid => playerValue(league, pid).value)
+      .map(pid => forecastForPlayer(league, pid).ppg)
+      .filter(value => value > 0)
       .sort((a, b) => b - a)
       .slice(0, required);
-    const avg = values.length ? values.reduce((s, v) => s + v, 0) / required : 0;
-    profile[pos] = { required, value: roundNum(avg, 1), count: values.length };
+    const avg = forecasts.length ? forecasts.reduce((sum, value) => sum + value, 0) / required : 0;
+    const replacement = safeNumber(league.projectionModel?.replacementByPosition?.[pos], 0);
+    const surplus = forecasts.reduce((sum, value) => sum + Math.max(0, value - replacement), 0);
+    profile[pos] = {
+      required, value: roundNum(avg, 2), count: forecasts.length,
+      replacement: roundNum(replacement, 2), surplus: roundNum(surplus, 2)
+    };
   }
   return profile;
-}
-
-function needScore(league, rosterId, overridePlayers = null) {
-  const profile = rosterNeedProfile(league, rosterId, overridePlayers);
-  return Object.values(profile).reduce((sum, p) => sum + p.value, 0);
 }
 
 function simulateTradePlayers(league, rosterId, gives, receives) {
@@ -1249,6 +1473,29 @@ function simulateTradePlayers(league, rosterId, gives, receives) {
   gives.filter(a => a.type === 'player').forEach(a => players.delete(String(a.playerId)));
   receives.filter(a => a.type === 'player').forEach(a => players.add(String(a.playerId)));
   return [...players];
+}
+
+function teamFitImpact(league, rosterId, beforePlayers, afterPlayers, packageReferenceValue = 0) {
+  const beforeLineup = optimalProjectedLineupScore(league, beforePlayers);
+  const afterLineup = optimalProjectedLineupScore(league, afterPlayers);
+  const beforeDepth = rosterDepthScore(league, beforePlayers);
+  const afterDepth = rosterDepthScore(league, afterPlayers);
+  const lineupDelta = afterLineup.total - beforeLineup.total;
+  const depthDelta = afterDepth - beforeDepth;
+  const contenderIndex = teamStrengthRank(league, rosterId);
+  const lineupValuePerPoint = 85 + contenderIndex * 175;
+  const uncapped = lineupDelta * lineupValuePerPoint + depthDelta * 55;
+  const cap = clampNumber(Math.max(325, packageReferenceValue * 0.13), 325, 1200);
+  const adjustment = clampNumber(uncapped, -cap, cap) * clampNumber(state.settings.needWeight, 0, 2);
+  return {
+    adjustment: roundNum(adjustment, 0),
+    lineupDelta: roundNum(lineupDelta, 2),
+    depthDelta: roundNum(depthDelta, 2),
+    beforePpg: roundNum(beforeLineup.total, 1),
+    afterPpg: roundNum(afterLineup.total, 1),
+    contenderIndex: roundNum(contenderIndex * 100, 0),
+    label: contenderIndex >= 0.67 ? 'contender' : contenderIndex <= 0.33 ? 'retool/rebuild' : 'middle'
+  };
 }
 
 function evaluateTrade() {
@@ -1263,42 +1510,57 @@ function evaluateTrade() {
 
   const aGives = state.selectedAssets.A;
   const bGives = state.selectedAssets.B;
-  const aRaw = sumAssets(league, aGives);
-  const bRaw = sumAssets(league, bGives);
-  const aBeforeNeed = needScore(league, rosterA);
-  const bBeforeNeed = needScore(league, rosterB);
+  if (!aGives.length || !bGives.length) {
+    $('tradeResult').className = 'trade-result empty';
+    $('tradeResult').textContent = 'Add at least one asset to both sides of the trade.';
+    return;
+  }
+
+  const packageA = packageValuation(league, aGives);
+  const packageB = packageValuation(league, bGives);
+  const rosterAPlayers = (league.rosterMap.get(rosterA)?.players || []).map(String);
+  const rosterBPlayers = (league.rosterMap.get(rosterB)?.players || []).map(String);
   const aAfterPlayers = simulateTradePlayers(league, rosterA, aGives, bGives);
   const bAfterPlayers = simulateTradePlayers(league, rosterB, bGives, aGives);
-  const aNeedDelta = (needScore(league, rosterA, aAfterPlayers) - aBeforeNeed) * state.settings.needWeight;
-  const bNeedDelta = (needScore(league, rosterB, bAfterPlayers) - bBeforeNeed) * state.settings.needWeight;
-  const aNet = bRaw - aRaw + aNeedDelta;
-  const bNet = aRaw - bRaw + bNeedDelta;
-  const spread = bRaw - aRaw;
-  const fairBand = Math.max(8, (aRaw + bRaw) * 0.08);
+  const referenceValue = Math.max(packageA.adjusted, packageB.adjusted);
+  const aFit = teamFitImpact(league, rosterA, rosterAPlayers, aAfterPlayers, referenceValue);
+  const bFit = teamFitImpact(league, rosterB, rosterBPlayers, bAfterPlayers, referenceValue);
+  const spread = packageB.adjusted - packageA.adjusted;
+  const averagePackage = Math.max(1, (packageA.adjusted + packageB.adjusted) / 2);
+  const packageConfidence = (packageA.confidence + packageB.confidence) / 2;
+  const projectionCoverage = safeNumber(league.projectionModel?.coverage, 0) * 100;
+  const analysisConfidence = clampNumber(packageConfidence * 0.68 + projectionCoverage * 0.32, 0, 96);
+  const uncertainty = 1 - analysisConfidence / 100;
+  const fairBand = clampNumber(averagePackage * (0.065 + uncertainty * 0.04), 250, 1100);
+  const aNet = spread + aFit.adjustment;
+  const bNet = -spread + bFit.adjustment;
+  const edgePercent = Math.abs(spread) / averagePackage * 100;
 
   let verdictClass = 'good';
-  let verdict = 'Fair trade range';
-  let explanation = 'The raw asset values are close enough that roster fit and personal preference should decide it.';
+  let verdict = 'Fair market-value range';
+  let explanation = `The package-adjusted difference is ${roundNum(Math.abs(spread), 0)}, inside this analysis's ${roundNum(fairBand, 0)}-point fair band.`;
   if (spread > fairBand) {
     verdictClass = 'bad';
-    verdict = `${teamName(league, rosterA)} appears to gain more value`;
-    explanation = `Team A receives about ${roundNum(spread)} more raw value than it sends before team-need adjustment.`;
+    verdict = `${teamName(league, rosterA)} wins on market value`;
+    explanation = `${teamName(league, rosterA)} receives about ${roundNum(spread, 0)} more package-adjusted value, a ${roundNum(edgePercent, 1)}% edge.`;
   } else if (spread < -fairBand) {
     verdictClass = 'bad';
-    verdict = `${teamName(league, rosterB)} appears to gain more value`;
-    explanation = `Team B receives about ${roundNum(Math.abs(spread))} more raw value than it sends before team-need adjustment.`;
-  } else if (Math.abs(aNet - bNet) > fairBand) {
+    verdict = `${teamName(league, rosterB)} wins on market value`;
+    explanation = `${teamName(league, rosterB)} receives about ${roundNum(Math.abs(spread), 0)} more package-adjusted value, a ${roundNum(edgePercent, 1)}% edge.`;
+  } else if (Math.abs(aFit.adjustment - bFit.adjustment) > fairBand * 0.65) {
     verdictClass = 'warn';
-    verdict = 'Raw value is fair, but roster fit is not even';
-    explanation = 'The player/pick value is close, but one side fills team needs better than the other.';
+    const fitWinner = aFit.adjustment > bFit.adjustment ? teamName(league, rosterA) : teamName(league, rosterB);
+    verdict = `Fair price, stronger roster fit for ${fitWinner}`;
+    explanation = 'The market values are close, but the projected starting-lineup and depth changes are materially different.';
   }
 
   $('tradeResult').classList.remove('empty');
   $('tradeResult').innerHTML = `
     <div class="trade-summary">
-      <div class="metric"><span>${roundNum(aRaw)}</span><small>Team A gives</small></div>
-      <div class="metric"><span>${roundNum(bRaw)}</span><small>Team B gives</small></div>
-      <div class="metric"><span>${roundNum(spread)}</span><small>Raw spread toward Team A</small></div>
+      <div class="metric"><span>${roundNum(packageA.adjusted, 0)}</span><small>Team A package</small></div>
+      <div class="metric"><span>${roundNum(packageB.adjusted, 0)}</span><small>Team B package</small></div>
+      <div class="metric"><span>${spread > 0 ? '+' : ''}${roundNum(spread, 0)}</span><small>Market edge toward Team A</small></div>
+      <div class="metric"><span>${escapeHtml(valueConfidenceLabel(analysisConfidence / 100))}</span><small>${roundNum(analysisConfidence, 0)}% data confidence</small></div>
     </div>
     <div class="verdict ${verdictClass}">
       <strong>${escapeHtml(verdict)}</strong>
@@ -1307,18 +1569,26 @@ function evaluateTrade() {
     <div class="grid two">
       <div class="result-card">
         <h3>${escapeHtml(teamName(league, rosterA))}</h3>
-        <p><strong>Net with needs:</strong> ${roundNum(aNet)}</p>
-        <p><strong>Need impact:</strong> ${roundNum(aNeedDelta)}</p>
+        <p><strong>Market net:</strong> ${spread >= 0 ? '+' : ''}${roundNum(spread, 0)}</p>
+        <p><strong>Projected lineup:</strong> ${aFit.beforePpg} → ${aFit.afterPpg} PPG (${aFit.lineupDelta >= 0 ? '+' : ''}${aFit.lineupDelta})</p>
+        <p><strong>Roster-fit adjustment:</strong> ${aFit.adjustment >= 0 ? '+' : ''}${aFit.adjustment} <small>${escapeHtml(aFit.label)} profile</small></p>
+        <p><strong>Team-context net:</strong> ${aNet >= 0 ? '+' : ''}${roundNum(aNet, 0)}</p>
         ${renderAssetBreakdown(league, bGives, 'Receives')}
         ${renderAssetBreakdown(league, aGives, 'Sends')}
       </div>
       <div class="result-card">
         <h3>${escapeHtml(teamName(league, rosterB))}</h3>
-        <p><strong>Net with needs:</strong> ${roundNum(bNet)}</p>
-        <p><strong>Need impact:</strong> ${roundNum(bNeedDelta)}</p>
+        <p><strong>Market net:</strong> ${-spread >= 0 ? '+' : ''}${roundNum(-spread, 0)}</p>
+        <p><strong>Projected lineup:</strong> ${bFit.beforePpg} → ${bFit.afterPpg} PPG (${bFit.lineupDelta >= 0 ? '+' : ''}${bFit.lineupDelta})</p>
+        <p><strong>Roster-fit adjustment:</strong> ${bFit.adjustment >= 0 ? '+' : ''}${bFit.adjustment} <small>${escapeHtml(bFit.label)} profile</small></p>
+        <p><strong>Team-context net:</strong> ${bNet >= 0 ? '+' : ''}${roundNum(bNet, 0)}</p>
         ${renderAssetBreakdown(league, aGives, 'Receives')}
         ${renderAssetBreakdown(league, bGives, 'Sends')}
       </div>
+    </div>
+    <div class="result-card">
+      <h3>Package adjustment</h3>
+      <p>Team A raw ${packageA.raw} → ${packageA.adjusted} (${packageA.adjustment >= 0 ? '+' : ''}${packageA.adjustment}); Team B raw ${packageB.raw} → ${packageB.adjusted} (${packageB.adjustment >= 0 ? '+' : ''}${packageB.adjustment}). Elite assets receive a scarcity premium while extra depth pieces are discounted for consolidation and roster-space cost.</p>
     </div>
     <div class="result-card">
       <h3>Weak spots before trade</h3>
@@ -1335,7 +1605,9 @@ function renderAssetBreakdown(league, assets, title) {
   const rows = assets.map(asset => {
     const v = assetValue(league, asset);
     const label = asset.type === 'player' ? `${v.name} (${v.position})` : v.label;
-    const detail = asset.type === 'player' ? `${v.ppg} PPG, last 5 ${v.last4}, ${v.percentile}th percentile` : v.detail;
+    const detail = asset.type === 'player'
+      ? `${v.forecastPpg} forecast PPG, ${v.vorp >= 0 ? '+' : ''}${v.vorp} over replacement, ${v.efficiency}th efficiency percentile, ${v.confidence} confidence${v.marketAdp ? `, ADP ${roundNum(v.marketAdp, 1)}` : ''}`
+      : v.detail;
     return `<li><strong>${escapeHtml(label)}</strong> — ${roundNum(v.value)} <small>${escapeHtml(detail || '')}</small></li>`;
   }).join('') || '<li>None</li>';
   return `<p><strong>${escapeHtml(title)}</strong></p><ul>${rows}</ul>`;
@@ -1347,7 +1619,9 @@ function describeWeakPositions(league, rosterId) {
   const weak = [];
   for (const pos of POSITION_ORDER) {
     const median = medianOf(leagueProfiles.map(p => p[pos]?.value || 0));
-    if ((profile[pos]?.value || 0) < median * 0.82 && (profile[pos]?.required || 0) > 0) weak.push(pos);
+    const required = profile[pos]?.required || 0;
+    const shallow = (profile[pos]?.count || 0) < required;
+    if (required && (shallow || (median && (profile[pos]?.value || 0) < median * 0.82))) weak.push(pos);
   }
   return weak.length ? weak.join(', ') : 'No severe positional holes detected';
 }
@@ -1373,7 +1647,7 @@ function renderAssetList(side) {
     const v = league ? assetValue(league, asset) : { value: 0, label: 'Pick', detail: '' };
     const title = asset.type === 'player' ? playerName(asset.playerId) : v.label;
     const sub = asset.type === 'player'
-      ? `${playerPrimaryPosition(asset.playerId)} • value ${v.value}`
+      ? `${playerPrimaryPosition(asset.playerId)} • value ${v.value} • ${v.forecastPpg} forecast PPG • ${v.confidence} confidence`
       : `${v.detail || 'Draft pick'} • value ${v.value}`;
     return `<div class="asset-card"><div><strong>${escapeHtml(title)}</strong><small>${escapeHtml(sub)}</small></div><button class="ghost" data-side="${side}" data-idx="${idx}">Remove</button></div>`;
   }).join('');
@@ -1541,7 +1815,7 @@ function renderPlayerStatCard(league, playerId) {
   const startRate = roundNum((data.rec.startRate || 0) * 100, 0);
   const rankText = `#${data.rank.rank} ${data.rank.position}`;
   const sourceLabel = data.rec.source === 'historical' ? `${data.rec.season === 'multi' ? 'Past 2 seasons' : data.rec.season}` : `${league.season || ''} league`;
-  const matchupLabel = `${data.value.percentile}th pct · ${trend.text}`;
+  const matchupLabel = `${data.value.forecastPpg} forecast PPG · ${data.value.efficiency}th efficiency pct`;
   const ageProfile = ageCurveProfile(data.player, league);
   const ageCurveTitle = isDynastyLeague(league) ? ageProfile.stage : 'N/A';
   const ageCurveSubtitle = ageProfile.yearsToRetirement !== null ? `${ageProfile.yearsToRetirement}y runway` : 'Age Curve';
@@ -1557,7 +1831,7 @@ function renderPlayerStatCard(league, playerId) {
         <div class="player-score">
           <strong>${roundNum(data.value.value, 1)}</strong>
           <span>VALUE</span>
-          <small>${last4} L5 avg · ${rankText}</small>
+          <small>${data.value.confidence} confidence · ${rankText}</small>
           ${renderTrendDots(data)}
         </div>
       </div>
@@ -1573,7 +1847,7 @@ function renderPlayerStatCard(league, playerId) {
 
         <div class="stat-tile-grid">
           <div class="stat-tile"><strong class="blue">${ppg}</strong><span>PPG</span></div>
-          <div class="stat-tile"><strong>${games}</strong><span>${gamesLabel}</span></div>
+          <div class="stat-tile"><strong>${data.value.forecastPpg}</strong><span>Forecast PPG</span></div>
           <div class="stat-tile"><strong>${total}</strong><span>Total Pts</span></div>
           <div class="stat-tile"><strong class="green">${roundNum(data.value.value, 1)}</strong><span>Trade Value</span></div>
         </div>
@@ -1583,9 +1857,9 @@ function renderPlayerStatCard(league, playerId) {
         <div class="stat-tile-grid three">
           <div class="stat-tile"><strong>${roundNum(data.rec.high || 0, 1)}</strong><span>High</span></div>
           <div class="stat-tile"><strong>${last4}</strong><span>Last 5</span></div>
-          <div class="stat-tile"><strong>${data.value.percentile}</strong><span>Pos Pct</span></div>
+          <div class="stat-tile"><strong>${data.value.vorp >= 0 ? '+' : ''}${data.value.vorp}</strong><span>VORP / Week</span></div>
           <div class="stat-tile"><strong>${data.rank.rank}/${data.rank.total}</strong><span>Value Rank</span></div>
-          <div class="stat-tile"><strong>${escapeHtml(data.status || 'Active')}</strong><span>Status</span></div>
+          <div class="stat-tile"><strong>${data.value.efficiency}</strong><span>Efficiency Pct</span></div>
           <div class="stat-tile"><strong>${escapeHtml(ageCurveTitle)}</strong><span>${escapeHtml(ageCurveSubtitle)}</span></div>
         </div>
       </div>
@@ -1634,7 +1908,8 @@ function renderTradePlayerCard(league, playerId) {
         <img class="player-headshot" src="${playerHeadshotUrl(playerId)}" alt="${escapeHtml(name)} headshot" onerror="this.onerror=null;this.src='${fallback}';" />
         <div class="player-identity">
           <h3>${escapeHtml(name)} <span class="status-dot ${tone === 'good' ? '' : tone}"></span></h3>
-          <div class="player-meta-row"><span class="position-pill">${escapeHtml(position)}</span><span>${escapeHtml(player.team || 'FA')} · value ${roundNum(value.value, 1)}</span></div>
+          <div class="player-meta-row"><span class="position-pill">${escapeHtml(position)}</span><span>${escapeHtml(player.team || 'FA')} · ${value.forecastPpg} forecast PPG · ${value.efficiency}th efficiency pct</span></div>
+          <div class="matchup-pill">${value.vorp >= 0 ? '+' : ''}${value.vorp} over replacement · ${escapeHtml(value.confidence)} confidence</div>
         </div>
         <div class="player-score compact-score">
           <strong>${roundNum(value.value, 1)}</strong>
@@ -1692,18 +1967,22 @@ function renderTradeModelExplanation(league) {
   if (isTightEndPremium(league)) rules.push('TE premium boost');
   if (idpSlotCount(league)) rules.push(`${idpSlotCount(league)} IDP slots`);
   const formatText = rules.length ? rules.join(', ') : 'standard positional multipliers';
+  const coverage = roundNum(safeNumber(league.projectionModel?.coverage, 0) * 100, 0);
   return `
     <section class="result-card model-explanation">
       <h3>What the trade model used</h3>
-      <p>The player values now use a KTC-style dynasty scale: market/tier anchor first, then controlled adjustments for league scoring, production, recent form, positional scarcity, age/status, rushing upside, and roster format.</p>
+      <p>Player price and team fit are modeled separately. Format-specific Sleeper ADP anchors the market price; league-scored projections, replacement level, verified production, efficiency, age, and availability refine it without letting one noisy input dominate.</p>
       <ul>
-        <li><strong>Quarterbacks:</strong> QB value starts with an offline KTC-style market/tier anchor. Production, recent form, rushing upside, age, and superflex scarcity can move a QB within a capped band, but efficient PPG alone cannot push a lower-market QB above elite dynasty QBs.</li>
-        <li><strong>Dynasty age curve:</strong> if the league is dynasty, the model now uses position-specific prime windows, decline windows, approximate retirement cliffs, and younger-player future-value runway. RB age is penalized earlier; QBs keep value longer; WR/TE decline is smoothed.</li>
-        <li><strong>Current year:</strong> league matchup data for ${escapeHtml(league.season || currentSeasonNumber(league))}, including PPG, total points, start rate, last-five-game trend, and positional percentile.</li>
+        <li><strong>Market anchor:</strong> format-aware Sleeper ADP (${isDynastyLeague(league) ? 'dynasty' : 'redraft'}, ${isSuperflexLeague(league) ? 'superflex/2QB' : '1QB'}, ${escapeHtml(scoringAdpSuffix(league))}) replaces the old hard-coded player list.</li>
+        <li><strong>Projection:</strong> ${escapeHtml(state.projectionSeason || activeValuationSeason(league))} raw stat projections are rescored under the league's available scoring fields. Per-game threshold bonuses use observed weekly data rather than being guessed from a season total. Roster projection coverage: ${coverage}%.</li>
+        <li><strong>Replacement and efficiency:</strong> projected points are measured against a replacement level derived from league size and actual QB, flex, superflex, TE, and IDP starter demand. Opportunity-adjusted efficiency is a controlled secondary input.</li>
+        <li><strong>Dynasty age curve:</strong> position-specific age effects are intentionally small when dynasty ADP already prices age, preventing age from being counted twice.</li>
+        <li><strong>Verified production:</strong> league matchup data for ${escapeHtml(league.season || currentSeasonNumber(league))}, plus recent form and historical production scored under this league's rules.</li>
         <li><strong>Previous years:</strong> best-effort historical stat fetches scored under this league's scoring rules. Loaded seasons: ${escapeHtml(seasons)}.</li>
         <li><strong>League format:</strong> ${escapeHtml(formatText)}.</li>
-        <li><strong>Draft picks:</strong> KTC-style round value, years until the pick conveys, and the original owner's projected roster strength to estimate early/mid/late pick value. Current-season rookie picks show if that season's draft has not been completed yet.</li>
-        <li><strong>Team needs:</strong> the app simulates each roster before and after the trade using starter slots, flex/superflex rules, and positional depth.</li>
+        <li><strong>Packages:</strong> elite assets receive a scarcity premium; extra lower-tier pieces receive a modest consolidation/roster-space discount. This prevents three replaceable players from automatically equaling one cornerstone.</li>
+        <li><strong>Draft picks:</strong> round value, estimated slot, original-roster strength, format, and years until the pick conveys.</li>
+        <li><strong>Team needs:</strong> the app sets the best projected legal lineup before and after the trade, adds a smaller depth effect, and caps fit so need never overwhelms market price.</li>
       </ul>
     </section>`;
 }
@@ -2053,7 +2332,7 @@ function renderComparisonPanel(league, playerAId, playerBId) {
   const a = playerCardData(league, playerAId);
   const b = playerCardData(league, playerBId);
   const diff = roundNum(a.value.value - b.value.value, 1);
-  const fairBand = Math.max(4, ((a.value.value + b.value.value) / 2) * 0.08);
+  const fairBand = Math.max(200, ((a.value.value + b.value.value) / 2) * 0.07);
   let verdict = `${a.name} and ${b.name} are in the same trade-value tier.`;
   let detail = `The model sees a ${Math.abs(diff)} point value gap, which is inside the normal negotiation band.`;
   if (diff > fairBand) {
@@ -2070,12 +2349,12 @@ function renderComparisonPanel(league, playerAId, playerBId) {
       <div class="compare-row"><div></div><strong>${escapeHtml(a.name)}</strong><strong>${escapeHtml(b.name)}</strong></div>
       <div class="compare-bars">
         ${compareMetric('Trade value', a.value.value, b.value.value)}
-        ${compareMetric('PPG', a.rec.ppg, b.rec.ppg)}
+        ${compareMetric('Forecast PPG', a.value.forecastPpg, b.value.forecastPpg)}
+        ${compareMetric('VORP / week', a.value.vorp, b.value.vorp)}
+        ${compareMetric('Efficiency pct', a.value.efficiency, b.value.efficiency, v => `${roundNum(v, 0)}th`)}
+        ${compareMetric('Verified PPG', a.rec.ppg, b.rec.ppg)}
         ${compareMetric('Last 5 avg', a.rec.last4Avg, b.rec.last4Avg)}
-        ${compareMetric('Total pts', a.rec.total, b.rec.total)}
-        ${compareMetric('Ceiling', a.rec.high, b.rec.high)}
-        ${compareMetric('Start rate', (a.rec.startRate || 0) * 100, (b.rec.startRate || 0) * 100, v => `${roundNum(v, 0)}%`)}
-        ${compareMetric('Pos percentile', a.value.percentile, b.value.percentile, v => `${roundNum(v, 0)}th`)}
+        ${compareMetric('Data confidence', a.value.confidenceScore, b.value.confidenceScore, v => `${roundNum(v, 0)}%`)}
       </div>
     </section>`;
 }
@@ -2256,8 +2535,8 @@ function renderStrength() {
   const el = $('strengthTable');
   if (!league) { el.innerHTML = '<p class="empty">Load a league first.</p>'; return; }
   const rows = [...league.teamStrength.entries()].sort((a, b) => b[1].score - a[1].score);
-  el.innerHTML = `<table><thead><tr><th>Team</th><th>Total value</th><th>Starter value</th><th>Potential PF</th><th>Pick outlook</th></tr></thead><tbody>${rows.map(([rid, s]) => `
-    <tr><td>${escapeHtml(teamName(league, rid))}</td><td>${roundNum(s.rosterValue)}</td><td>${roundNum(s.startersValue)}</td><td>${roundNum(s.maxpf)}</td><td>${teamStrengthRank(league, rid) <= 0.33 ? '<span class="badge good">early picks</span>' : teamStrengthRank(league, rid) >= 0.67 ? '<span class="badge bad">late picks</span>' : '<span class="badge warn">mid picks</span>'}</td></tr>`).join('')}</tbody></table>`;
+  el.innerHTML = `<table><thead><tr><th>Team</th><th>Core value</th><th>Starter value</th><th>Projected lineup</th><th>Pick outlook</th></tr></thead><tbody>${rows.map(([rid, s]) => `
+    <tr><td>${escapeHtml(teamName(league, rid))}</td><td>${roundNum(s.rosterValue)}</td><td>${roundNum(s.startersValue)}</td><td>${roundNum(s.projectedLineupPpg, 1)} PPG</td><td>${teamStrengthRank(league, rid) <= 0.33 ? '<span class="badge good">early picks</span>' : teamStrengthRank(league, rid) >= 0.67 ? '<span class="badge bad">late picks</span>' : '<span class="badge warn">mid picks</span>'}</td></tr>`).join('')}</tbody></table>`;
 }
 
 function renderPlayerValues() {
@@ -2275,14 +2554,14 @@ function renderPlayerValues() {
     .slice(0, 250);
   const selected = selectedCompareIds();
   renderCompareSelectionSlots();
-  el.innerHTML = `<table><thead><tr><th>Player</th><th>Pos</th><th>Value</th><th>PPG</th><th>Last 5</th><th>Games</th><th>Model</th><th>Status</th></tr></thead><tbody>${rows.map(v => {
+  el.innerHTML = `<table><thead><tr><th>Player</th><th>Pos</th><th>Value</th><th>Forecast</th><th>VORP</th><th>Efficiency</th><th>ADP</th><th>Confidence</th></tr></thead><tbody>${rows.map(v => {
     const isA = String(selected.A) === String(v.playerId);
     const isB = String(selected.B) === String(v.playerId);
     const selectedClass = isA ? ' selected-a' : isB ? ' selected-b' : '';
     const locked = selected.A && selected.B && !isA && !isB;
     const selectionText = isA ? 'Selected 1 · tap again to remove' : isB ? 'Selected 2 · tap again to remove' : locked ? 'Both slots filled' : !selected.A ? 'Tap to select 1' : 'Tap to select 2';
     const selectionBadge = isA ? '<span class="selection-badge first">1</span>' : isB ? '<span class="selection-badge second">2</span>' : '';
-    return `<tr class="player-row-clickable${selectedClass}${locked ? ' selection-locked' : ''}" data-player-id="${escapeHtml(v.playerId)}"><td><div class="player-table-name-row">${selectionBadge}<span>${escapeHtml(v.name)}</span></div><small>${escapeHtml(getPlayer(v.playerId)?.team || 'FA')} · ${escapeHtml(selectionText)}</small></td><td>${escapeHtml(v.position)}</td><td><strong>${roundNum(v.value)}</strong></td><td>${v.ppg}</td><td>${v.last4}</td><td>${v.games}</td><td>${escapeHtml(v.valueModel || v.source || '')}</td><td>${escapeHtml(v.status || '')}</td></tr>`;
+    return `<tr class="player-row-clickable${selectedClass}${locked ? ' selection-locked' : ''}" data-player-id="${escapeHtml(v.playerId)}"><td><div class="player-table-name-row">${selectionBadge}<span>${escapeHtml(v.name)}</span></div><small>${escapeHtml(getPlayer(v.playerId)?.team || 'FA')} · ${escapeHtml(selectionText)}</small></td><td>${escapeHtml(v.position)}</td><td><strong>${roundNum(v.value)}</strong></td><td>${v.forecastPpg}</td><td>${v.vorp >= 0 ? '+' : ''}${v.vorp}</td><td>${v.efficiency}th</td><td>${v.marketAdp ? roundNum(v.marketAdp, 1) : '—'}</td><td>${escapeHtml(v.confidence)}</td></tr>`;
   }).join('')}</tbody></table>`;
   el.querySelectorAll('tr[data-player-id]').forEach(row => {
     row.addEventListener('click', () => togglePlayerValueSelection(row.dataset.playerId));
@@ -2348,7 +2627,7 @@ function fillTeamPlayerSelects() {
       .map(pid => ({ pid: String(pid), value: playerValue(league, pid), player: getPlayer(pid) || {} }))
       .sort((a, b) => b.value.value - a.value.value);
     const picks = ownedPicksForRoster(league, Number(roster?.roster_id || 0));
-    const playerOptions = players.map(row => `<option value="player:${escapeHtml(row.pid)}">${escapeHtml(row.value.name)} — ${escapeHtml(row.value.position)} · ${roundNum(row.value.value)} value · ${row.value.ppg} PPG</option>`).join('');
+    const playerOptions = players.map(row => `<option value="player:${escapeHtml(row.pid)}">${escapeHtml(row.value.name)} — ${escapeHtml(row.value.position)} · ${roundNum(row.value.value)} value · ${row.value.forecastPpg} forecast PPG</option>`).join('');
     const pickOptions = picks.map(pick => {
       const value = pickValue(league, pick);
       return `<option value="pick:${pick.season}:${pick.round}:${pick.originalRosterId}">${escapeHtml(value.label)} · ${roundNum(value.value)} value · ${escapeHtml(value.detail)}</option>`;
@@ -2387,9 +2666,10 @@ function draftLooksComplete(league, draft) {
 }
 
 function shouldShowDraftPickSeason(league, season) {
-  const baseSeason = currentSeasonNumber(league);
+  const baseSeason = activeValuationSeason(league);
   if (Number(season) > Number(baseSeason)) return true;
   if (Number(season) < Number(baseSeason)) return false;
+  if (Number(league?.season || 0) < Number(baseSeason)) return true;
 
   const seasonDrafts = draftForSeason(league, season);
   // Current-season rookie picks are tradeable before the draft. If there is no draft object yet, lean on league status.
@@ -2401,7 +2681,7 @@ function shouldShowDraftPickSeason(league, season) {
 }
 
 function pickSeasonList(league) {
-  const baseSeason = currentSeasonNumber(league);
+  const baseSeason = activeValuationSeason(league);
   const seasons = [];
   for (let offset = 0; offset <= DRAFT_PICK_LOOKAHEAD_YEARS; offset += 1) {
     const season = baseSeason + offset;
@@ -3200,6 +3480,14 @@ async function loadAll(idsOverride = null) {
   try {
     if (!state.nflState) await loadNflState();
     if (!Object.keys(state.players || {}).length) await loadPlayers();
+    if (!state.projections.size || Number(state.projectionSeason) !== activeValuationSeason()) {
+      try {
+        await loadProjections();
+      } catch (err) {
+        logStatus(`Projection warning: ${err.message}. Falling back to market rank and production.`);
+        console.warn(err);
+      }
+    }
 
     const existing = new Map(state.leagues.map(league => [String(league.league_id), league]));
     const loaded = [];
@@ -3281,8 +3569,8 @@ function wireEvents() {
   $('generateWeekRecapBtn').addEventListener('click', () => { $('recapRangeSelect').value = 'week'; generateRecap(); });
   $('generateMonthRecapBtn').addEventListener('click', () => { $('recapRangeSelect').value = 'month'; generateRecap(); });
   $('generateSeasonRecapBtn').addEventListener('click', () => { $('recapRangeSelect').value = 'season'; generateRecap(); });
-  $('generateOffseasonRecapBtn').addEventListener('click', () => { $('recapRangeSelect').value = 'offseason'; generateRecap(); });
-  $('generateDraftRecapBtn').addEventListener('click', () => { $('recapRangeSelect').value = 'draft'; generateRecap(); });
+  if ($('generateOffseasonRecapBtn')) $('generateOffseasonRecapBtn').addEventListener('click', () => { $('recapRangeSelect').value = 'offseason'; generateRecap(); });
+  if ($('generateDraftRecapBtn')) $('generateDraftRecapBtn').addEventListener('click', () => { $('recapRangeSelect').value = 'draft'; generateRecap(); });
   $('copyRecapBtn').addEventListener('click', async () => { await navigator.clipboard.writeText($('recapOutput').value); logStatus('Copied recap text to clipboard.'); });
   $('exportDataBtn').addEventListener('click', exportData);
   $('playerValueSearch').addEventListener('input', renderPlayerValues);
@@ -3296,13 +3584,13 @@ function wireEvents() {
     $(id).addEventListener('change', () => { renderPlayerComparison(); renderPlayerValues(); });
   });
 
-  ['ageWeight', 'recentWeight', 'needWeight', 'pickWeight'].forEach(id => {
+  ['ageWeight', 'recentWeight', 'projectionWeight', 'efficiencyWeight', 'needWeight', 'pickWeight'].forEach(id => {
     $(id).addEventListener('input', () => {
       $(`${id}Value`).textContent = `${Number($(id).value).toFixed(1)}x`;
     });
   });
   $('saveSettingsBtn').addEventListener('click', () => {
-    ['ageWeight', 'recentWeight', 'needWeight', 'pickWeight'].forEach(id => state.settings[id] = Number($(id).value));
+    ['ageWeight', 'recentWeight', 'projectionWeight', 'efficiencyWeight', 'needWeight', 'pickWeight'].forEach(id => state.settings[id] = Number($(id).value));
     saveSettings();
     for (const league of state.leagues) { league.valueCache.clear(); buildTeamStrength(league); }
     renderEverything();
@@ -3343,4 +3631,31 @@ async function boot() {
   }
 }
 
-boot();
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    state,
+    DEFAULT_SETTINGS,
+    normalizePosition,
+    isDynastyLeague,
+    isSuperflexLeague,
+    fantasyPointsFromStats,
+    marketValueFromRank,
+    marketSignalForPlayer,
+    starterDemandPerRoster,
+    buildProjectionModel,
+    forecastForPlayer,
+    projectionIntrinsicValue,
+    playerValue,
+    optimalProjectedLineupScore,
+    rosterNeedProfile,
+    teamFitImpact,
+    adjustPackageValues,
+    packageValuation,
+    interpolatePickBand,
+    pickValue,
+    buildTeamStrength,
+    valueConfidenceLabel
+  };
+}
+
+if (typeof document !== 'undefined' && !globalThis.__SLEEPER_SHIELD_TEST_MODE__) boot();
