@@ -45,6 +45,7 @@ const SUPER_FLEX_SLOTS = new Set(['SUPER_FLEX', 'SUPERFLEX', 'OP']);
 const IDP_FLEX_SLOTS = new Set(['IDP_FLEX', 'DL_LB_DB']);
 const RECENT_GAME_COUNT = 5;
 const DRAFT_PICK_LOOKAHEAD_YEARS = 3;
+const DRAFT_AVAILABILITY_SIMULATIONS = 180;
 
 const POSITION_AGE_CURVES = {
   // Approximate dynasty curve by fantasy position. The horizon is a planning estimate, not a player-specific retirement prediction.
@@ -464,7 +465,10 @@ async function loadLeague(leagueId) {
   for (const draft of (drafts || [])) {
     try {
       const picks = await fetchJson(`${API_BASE}/draft/${draft.draft_id}/picks`, `draft picks ${draft.draft_id}`);
-      draftPicks.push(...(picks || []));
+      draftPicks.push(...(picks || []).map(pick => ({
+        ...pick,
+        season: pick?.season || draftSeasonNumber(draft, league)
+      })));
       await delay(50);
     } catch (err) {
       console.warn(err);
@@ -2994,12 +2998,153 @@ function availableDraftSeasons(league) {
   return [...seasons].filter(Boolean).sort((a, b) => a - b);
 }
 
+function preferredDraftForSeason(league, season) {
+  const drafts = draftForSeason(league, season);
+  if (!drafts.length) return null;
+  const priority = { drafting: 0, pre_draft: 1, paused: 2, complete: 3, completed: 3 };
+  return drafts.slice().sort((a, b) => {
+    const aStatus = priority[String(a?.status || '').toLowerCase()] ?? 2;
+    const bStatus = priority[String(b?.status || '').toLowerCase()] ?? 2;
+    return aStatus - bStatus;
+  })[0];
+}
+
+function draftTypeForSeason(league, season) {
+  const draft = preferredDraftForSeason(league, season);
+  const raw = String(draft?.type || draft?.settings?.draft_type || draft?.settings?.type || 'linear').toLowerCase();
+  return raw.includes('snake') ? 'snake' : 'linear';
+}
+
+function rosterForDraftIdentity(league, identity) {
+  const key = String(identity || '');
+  if (!key) return null;
+  return (league?.rosters || []).find(roster => {
+    if (String(roster.roster_id) === key || String(roster.owner_id) === key) return true;
+    return (roster.co_owners || []).some(ownerId => String(ownerId) === key);
+  }) || null;
+}
+
+function draftSlotMapForSeason(league, season) {
+  const teamCount = Math.max(1, safeNumber(league?.total_rosters, league?.rosters?.length || 1));
+  const draft = preferredDraftForSeason(league, season);
+  const slotToRoster = new Map();
+  const exactSlots = new Set();
+  const directMap = draft?.slot_to_roster_id || draft?.slotToRosterId || draft?.metadata?.slot_to_roster_id || {};
+
+  for (const [slotRaw, rosterRaw] of Object.entries(directMap)) {
+    const slot = Number(slotRaw);
+    const rosterId = Number(rosterRaw);
+    if (!slot || !rosterId || slot > teamCount) continue;
+    slotToRoster.set(slot, rosterId);
+    exactSlots.add(slot);
+  }
+
+  const draftOrder = draft?.draft_order || draft?.draftOrder || {};
+  for (const [identity, slotRaw] of Object.entries(draftOrder)) {
+    const slot = Number(slotRaw);
+    const roster = rosterForDraftIdentity(league, identity);
+    if (!slot || !roster || slot > teamCount || slotToRoster.has(slot)) continue;
+    slotToRoster.set(slot, Number(roster.roster_id));
+    exactSlots.add(slot);
+  }
+
+  const assignedRosters = new Set(slotToRoster.values());
+  const projectedRosters = (league?.rosters || [])
+    .filter(roster => !assignedRosters.has(Number(roster.roster_id)))
+    .sort((a, b) => teamStrengthRank(league, a.roster_id) - teamStrengthRank(league, b.roster_id));
+  const emptySlots = Array.from({ length: teamCount }, (_, index) => index + 1).filter(slot => !slotToRoster.has(slot));
+  emptySlots.forEach((slot, index) => {
+    const roster = projectedRosters[index];
+    if (roster) slotToRoster.set(slot, Number(roster.roster_id));
+  });
+
+  return { draft, teamCount, slotToRoster, exactSlots };
+}
+
+function currentOwnerForDraftPick(league, season, round, originalRosterId) {
+  let currentOwnerId = Number(originalRosterId);
+  for (const traded of league?.tradedPicks || []) {
+    if (Number(traded.season) !== Number(season) || Number(traded.round) !== Number(round)) continue;
+    if (pickOriginalOwnerFromSleeper(traded) !== Number(originalRosterId)) continue;
+    const nextOwner = pickCurrentOwnerFromSleeper(traded);
+    if (nextOwner) currentOwnerId = nextOwner;
+  }
+  return currentOwnerId;
+}
+
+function draftSelectionRows(league, season) {
+  if (!league || !season) return [];
+  const { draft, teamCount, slotToRoster, exactSlots } = draftSlotMapForSeason(league, season);
+  const rounds = Math.max(1, Math.min(10, safeNumber(draft?.settings?.rounds || league?.settings?.draft_rounds, 5)));
+  const draftType = draftTypeForSeason(league, season);
+  const draftId = draft?.draft_id;
+  const completedPicks = (league?.draftPicks || []).filter(pick => {
+    if (draftId && pick?.draft_id) return String(pick.draft_id) === String(draftId);
+    return Number(pick?.season || pick?.metadata?.season || season) === Number(season);
+  });
+  const completedByPickNo = new Map(completedPicks
+    .filter(pick => safeNumber(pick.pick_no, 0) > 0)
+    .map(pick => [Number(pick.pick_no), pick]));
+  const rows = [];
+
+  for (let round = 1; round <= rounds; round += 1) {
+    const slots = Array.from({ length: teamCount }, (_, index) => index + 1);
+    if (draftType === 'snake' && round % 2 === 0) slots.reverse();
+    slots.forEach((slot, roundIndex) => {
+      const overallPick = (round - 1) * teamCount + roundIndex + 1;
+      const originalRosterId = Number(slotToRoster.get(slot) || 0);
+      if (!originalRosterId) return;
+      const completed = completedByPickNo.get(overallPick)
+        || completedPicks.find(pick => Number(pick.round) === round && Number(pick.draft_slot) === slot)
+        || null;
+      rows.push({
+        season: Number(season),
+        round,
+        slot,
+        roundPick: roundIndex + 1,
+        overallPick,
+        pickLabel: `${round}.${String(roundIndex + 1).padStart(2, '0')}`,
+        originalRosterId,
+        currentOwnerId: currentOwnerForDraftPick(league, season, round, originalRosterId),
+        exact: exactSlots.has(slot),
+        draftType,
+        selectedPlayerId: completed?.player_id ? String(completed.player_id) : '',
+        selectedPick: completed
+      });
+    });
+  }
+  return rows;
+}
+
+function teamDraftCapitalForSeason(league, rosterId, season) {
+  const picks = draftSelectionRows(league, season)
+    .filter(pick => Number(pick.currentOwnerId) === Number(rosterId) && !pick.selectedPlayerId)
+    .map(pick => {
+      const valuation = pickValue(league, {
+        season: pick.season,
+        round: pick.round,
+        originalRosterId: pick.originalRosterId
+      });
+      return { ...pick, value: valuation.value, valuation };
+    });
+  return {
+    picks,
+    totalValue: picks.reduce((sum, pick) => sum + safeNumber(pick.value, 0), 0),
+    exactCount: picks.filter(pick => pick.exact).length,
+    projectedCount: picks.filter(pick => !pick.exact).length
+  };
+}
+
 function draftProspectCandidates(league, season) {
   const targetSeason = Number(season);
   const rostered = new Set((league.rosters || []).flatMap(roster => roster.players || []).map(String));
+  const drafted = new Set((league.draftPicks || [])
+    .filter(pick => Number(pick?.season || pick?.metadata?.season || targetSeason) === targetSeason)
+    .map(pick => String(pick?.player_id || ''))
+    .filter(Boolean));
   const activePositions = activeLeaguePositions(league);
   return Object.values(state.players || {})
-    .filter(player => player?.player_id && !rostered.has(String(player.player_id)))
+    .filter(player => player?.player_id && !rostered.has(String(player.player_id)) && !drafted.has(String(player.player_id)))
     .filter(player => player.active !== false)
     .filter(player => playerRookieSeason(player) === targetSeason)
     .filter(player => activePositions.has(playerPrimaryPosition(player.player_id)))
@@ -3011,11 +3156,10 @@ function draftProspectCandidates(league, season) {
     });
 }
 
-function draftRecommendationsForTeam(league, rosterId, season, positionFilter = 'NEED', limit = 5) {
+function scoredDraftProspectsForTeam(league, rosterId, season, positionFilter = 'NEED') {
   if (!league || !rosterId) return [];
   const needScores = teamPositionNeedScores(league, rosterId);
   const candidates = draftProspectCandidates(league, season)
-    .filter(player => positionFilter === 'ALL' || positionFilter === 'NEED' || playerPrimaryPosition(player.player_id) === positionFilter)
     .map(player => {
       const playerId = String(player.player_id);
       const position = playerPrimaryPosition(playerId);
@@ -3059,9 +3203,148 @@ function draftRecommendationsForTeam(league, rosterId, season, positionFilter = 
         capital,
         reasons
       };
-    })
+    });
+
+  const consensusRanks = new Map(candidates.slice()
+    .sort((a, b) => b.potentialScore - a.potentialScore || b.value - a.value || safeNumber(a.marketAdp, 9999) - safeNumber(b.marketAdp, 9999))
+    .map((prospect, index) => [prospect.playerId, index + 1]));
+  candidates.forEach(prospect => { prospect.draftRank = consensusRanks.get(prospect.playerId) || candidates.length; });
+  return candidates
+    .filter(prospect => positionFilter === 'ALL' || positionFilter === 'NEED' || prospect.position === positionFilter)
     .sort((a, b) => b.fitScore - a.fitScore || b.potentialScore - a.potentialScore || b.value - a.value);
-  return candidates.slice(0, Math.max(1, safeNumber(limit, 5)));
+}
+
+function draftRecommendationsForTeam(league, rosterId, season, positionFilter = 'NEED', limit = 5) {
+  return scoredDraftProspectsForTeam(league, rosterId, season, positionFilter)
+    .slice(0, Math.max(1, safeNumber(limit, 5)));
+}
+
+function draftAvailabilityLabel(percent) {
+  if (percent >= 75) return 'Likely';
+  if (percent >= 50) return 'In range';
+  if (percent >= 30) return 'Possible';
+  return 'Long shot';
+}
+
+function seededDraftRandom(seedValue) {
+  let seed = Number(seedValue) >>> 0;
+  if (!seed) seed = 0x9e3779b9;
+  return () => {
+    seed += 0x6d2b79f5;
+    let value = seed;
+    value = Math.imul(value ^ (value >>> 15), value | 1);
+    value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function draftSeedFromText(textValue) {
+  let hash = 2166136261;
+  for (const char of String(textValue || '')) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function draftAvailabilityForTeam(league, rosterId, season, positionFilter = 'NEED', perPick = 3, simulationCount = DRAFT_AVAILABILITY_SIMULATIONS) {
+  if (!league || !rosterId || !season) return { capital: { picks: [], totalValue: 0, exactCount: 0, projectedCount: 0 }, groups: [], simulations: 0 };
+  const schedule = draftSelectionRows(league, season);
+  const capital = teamDraftCapitalForSeason(league, rosterId, season);
+  if (!capital.picks.length) return { capital, groups: [], simulations: 0 };
+
+  const targetProfiles = scoredDraftProspectsForTeam(league, rosterId, season, positionFilter);
+  const fullTargetProfiles = scoredDraftProspectsForTeam(league, rosterId, season, 'ALL');
+  if (!fullTargetProfiles.length) return { capital, groups: capital.picks.map(pick => ({ pick, options: [] })), simulations: 0 };
+
+  const maxTargetPick = Math.max(...capital.picks.map(pick => pick.overallPick));
+  const poolLimit = Math.min(220, Math.max(90, maxTargetPick + 40));
+  const poolIds = new Set(fullTargetProfiles.slice(0, poolLimit).map(prospect => prospect.playerId));
+  targetProfiles.slice(0, 45).forEach(prospect => poolIds.add(prospect.playerId));
+  const pool = fullTargetProfiles.filter(prospect => poolIds.has(prospect.playerId));
+  const fullTargetById = new Map(fullTargetProfiles.map(prospect => [prospect.playerId, prospect]));
+  const targetById = new Map(targetProfiles.map(prospect => [prospect.playerId, prospect]));
+  const ownerProfiles = new Map();
+  for (const roster of league.rosters || []) {
+    const scored = scoredDraftProspectsForTeam(league, roster.roster_id, season, 'ALL');
+    ownerProfiles.set(Number(roster.roster_id), new Map(scored.map(prospect => [prospect.playerId, prospect])));
+  }
+
+  const targetPickNumbers = new Set(capital.picks.map(pick => pick.overallPick));
+  const availabilityCounts = new Map(capital.picks.map(pick => [pick.overallPick, new Map()]));
+  const simulations = Math.max(30, Math.min(500, safeNumber(simulationCount, DRAFT_AVAILABILITY_SIMULATIONS)));
+  const baseSeed = draftSeedFromText(`${league.league_id || 'league'}:${season}:${rosterId}:${pool.length}`);
+
+  for (let simulation = 0; simulation < simulations; simulation += 1) {
+    const random = seededDraftRandom(baseSeed + simulation * 2654435761);
+    const available = new Set(pool.map(prospect => prospect.playerId));
+    const draftedByOwner = new Map();
+
+    for (const pick of schedule) {
+      if (pick.selectedPlayerId) {
+        available.delete(pick.selectedPlayerId);
+        const ownerId = Number(pick.currentOwnerId);
+        const position = playerPrimaryPosition(pick.selectedPlayerId);
+        const positionCounts = draftedByOwner.get(ownerId) || new Map();
+        positionCounts.set(position, safeNumber(positionCounts.get(position), 0) + 1);
+        draftedByOwner.set(ownerId, positionCounts);
+        continue;
+      }
+      if (pick.overallPick > maxTargetPick || !available.size) break;
+
+      if (targetPickNumbers.has(pick.overallPick) && Number(pick.currentOwnerId) === Number(rosterId)) {
+        const counts = availabilityCounts.get(pick.overallPick);
+        for (const playerId of available) {
+          if (!targetById.has(playerId)) continue;
+          counts.set(playerId, safeNumber(counts.get(playerId), 0) + 1);
+        }
+      }
+
+      const ownerId = Number(pick.currentOwnerId);
+      const ownerBoard = ownerProfiles.get(ownerId) || ownerProfiles.get(Number(rosterId));
+      const positionCounts = draftedByOwner.get(ownerId) || new Map();
+      let selectedId = '';
+      let selectedScore = -Infinity;
+
+      for (const playerId of available) {
+        const prospect = ownerBoard?.get(playerId) || fullTargetById.get(playerId);
+        if (!prospect) continue;
+        const alreadyDraftedAtPosition = safeNumber(positionCounts.get(prospect.position), 0);
+        const diversificationPenalty = alreadyDraftedAtPosition * (prospect.position === 'QB' && isSuperflexLeague(league) ? 2.3 : 4.2);
+        const confidenceNoise = prospect.confidence === 'Low' ? 2.5 : prospect.confidence === 'Medium' ? 1.2 : 0;
+        const uncertainty = 4.2 + Math.min(5.5, pick.overallPick * 0.09) + confidenceNoise;
+        const centeredNoise = ((random() + random() + random() + random()) - 2) * uncertainty;
+        const score = prospect.potentialScore * 0.76 + prospect.needScore * 0.24 - diversificationPenalty + centeredNoise;
+        if (score > selectedScore) {
+          selectedScore = score;
+          selectedId = playerId;
+        }
+      }
+
+      if (selectedId) {
+        available.delete(selectedId);
+        const selected = ownerBoard?.get(selectedId) || targetById.get(selectedId);
+        if (selected) positionCounts.set(selected.position, safeNumber(positionCounts.get(selected.position), 0) + 1);
+        draftedByOwner.set(ownerId, positionCounts);
+      }
+    }
+  }
+
+  const groups = capital.picks.map(pick => {
+    const counts = availabilityCounts.get(pick.overallPick) || new Map();
+    const options = targetProfiles.map(prospect => {
+      const availability = roundNum((safeNumber(counts.get(prospect.playerId), 0) / simulations) * 100, 0);
+      const reachRounds = Math.max(0, prospect.draftRank - pick.overallPick - safeNumber(league.total_rosters, league.rosters?.length || 1));
+      const targetScore = prospect.fitScore * 0.62 + prospect.potentialScore * 0.18 + availability * 0.20 - reachRounds * 0.45;
+      return { ...prospect, availability, availabilityLabel: draftAvailabilityLabel(availability), targetScore };
+    })
+      .filter(prospect => prospect.availability >= 18)
+      .sort((a, b) => b.targetScore - a.targetScore || b.fitScore - a.fitScore || a.draftRank - b.draftRank)
+      .slice(0, Math.max(1, safeNumber(perPick, 3)));
+    return { pick, options };
+  });
+
+  return { capital, groups, simulations };
 }
 
 function fillDraftControls() {
@@ -3085,11 +3368,74 @@ function fillDraftControls() {
   renderDraftRecommendations();
 }
 
+function draftPickDisplayLabel(pick) {
+  return `${pick?.exact ? '' : '~'}${pick?.pickLabel || 'Pick'}`;
+}
+
+function renderDraftProspectCard(prospect, index) {
+  return `
+    <article class="prospect-card">
+      <span class="prospect-rank">${index + 1}</span>
+      <div class="prospect-card-copy">
+        <h4>${escapeHtml(prospect.name)}</h4>
+        <p class="prospect-meta">${escapeHtml(prospect.position)} · ${escapeHtml(prospect.team)}${prospect.college ? ` · ${escapeHtml(prospect.college)}` : ''}${prospect.age ? ` · age ${escapeHtml(prospect.age)}` : ''}</p>
+        <div class="prospect-reasons"><span class="badge">Class #${displayNumber(prospect.draftRank, 0)}</span>${prospect.reasons.slice(0, 3).map(reason => `<span class="badge">${escapeHtml(reason)}</span>`).join('')}</div>
+        <p class="prospect-note">Potential ${displayNumber(prospect.potentialScore)} · Need ${displayNumber(prospect.needScore)} · ${escapeHtml(prospect.confidence)} data confidence</p>
+      </div>
+      <div class="fit-score"><span>Team fit</span><strong>${displayNumber(prospect.fitScore)}</strong></div>
+    </article>`;
+}
+
+function renderDraftCapitalSummary(capital) {
+  if (!capital?.picks?.length) return '';
+  const exactText = capital.projectedCount
+    ? `${capital.projectedCount} projected position${capital.projectedCount === 1 ? '' : 's'}`
+    : 'Exact draft order loaded';
+  return `
+    <div class="draft-capital-heading">
+      <span>Owned capital</span>
+      <strong>${capital.picks.length} pick${capital.picks.length === 1 ? '' : 's'} · ${displayNumber(capital.totalValue, 0)} value</strong>
+    </div>
+    <div class="draft-pick-chips">${capital.picks.map(pick => `<span class="draft-pick-chip${pick.exact ? '' : ' projected'}">${escapeHtml(draftPickDisplayLabel(pick))}</span>`).join('')}</div>
+    <p>${escapeHtml(exactText)}</p>`;
+}
+
+function renderDraftAvailabilityGroup(group, league, rosterId) {
+  const pick = group.pick;
+  const originalTeam = teamName(league, pick.originalRosterId);
+  const acquired = Number(pick.originalRosterId) !== Number(rosterId);
+  const pickMeta = `${pick.exact ? 'Exact position' : 'Projected position'}${acquired ? ` · via ${originalTeam}` : ''} · ${displayNumber(pick.value, 0)} pick value`;
+  return `
+    <section class="pick-availability-group">
+      <div class="pick-availability-heading">
+        <div><span class="pick-number">${escapeHtml(draftPickDisplayLabel(pick))}</span><span class="pick-round-label">Round ${pick.round}</span></div>
+        <small>${escapeHtml(pickMeta)}</small>
+      </div>
+      <div class="pick-options">
+        ${group.options.length ? group.options.map(prospect => `
+          <article class="availability-player">
+            <div class="availability-player-topline">
+              <div>
+                <h4>${escapeHtml(prospect.name)}</h4>
+                <p>${escapeHtml(prospect.position)} · ${escapeHtml(prospect.team)} · Class #${displayNumber(prospect.draftRank, 0)}</p>
+              </div>
+              <div class="availability-percent"><strong>${displayNumber(prospect.availability, 0)}%</strong><span>${escapeHtml(prospect.availabilityLabel)}</span></div>
+            </div>
+            <div class="availability-track" aria-label="${displayNumber(prospect.availability, 0)} percent chance of being available"><span style="width:${clampNumber(prospect.availability, 0, 100)}%"></span></div>
+            <div class="availability-player-footer"><span>Fit ${displayNumber(prospect.fitScore)}</span><span>Potential ${displayNumber(prospect.potentialScore)}</span></div>
+          </article>`).join('') : '<p class="pick-options-empty">No prospect cleared the model’s availability threshold at this pick.</p>'}
+      </div>
+    </section>`;
+}
+
 function renderDraftRecommendations() {
   const summary = $('draftNeedsSummary');
   const output = $('draftRecommendations');
   const status = $('draftDataStatus');
-  if (!summary || !output) return;
+  const capitalOutput = $('draftCapitalSummary');
+  const availabilityOutput = $('draftAvailability');
+  const availabilityStatus = $('draftAvailabilityStatus');
+  if (!summary || !output || !capitalOutput || !availabilityOutput) return;
   const league = getSelectedLeague();
   const rosterId = Number($('draftTeamSelect')?.value);
   const season = Number($('draftSeasonSelect')?.value);
@@ -3099,7 +3445,12 @@ function renderDraftRecommendations() {
     summary.textContent = 'Load a league to build a team-specific draft board.';
     output.className = 'prospect-grid empty';
     output.textContent = 'Rookie targets will appear here.';
+    capitalOutput.className = 'draft-capital-summary empty';
+    capitalOutput.textContent = 'Load a league to map this team’s picks.';
+    availabilityOutput.className = 'draft-availability empty';
+    availabilityOutput.textContent = 'Likely options will appear here.';
     if (status) status.textContent = 'Waiting for league';
+    if (availabilityStatus) availabilityStatus.textContent = 'Waiting for picks';
     return;
   }
 
@@ -3113,24 +3464,33 @@ function renderDraftRecommendations() {
 
   const allCandidates = draftProspectCandidates(league, season);
   const recommendations = draftRecommendationsForTeam(league, rosterId, season, positionFilter, 5);
+  const availability = draftAvailabilityForTeam(league, rosterId, season, positionFilter, 3);
   if (status) status.textContent = `${allCandidates.length} ${season} rookies found`;
   if (!recommendations.length) {
     output.className = 'prospect-grid empty';
     const positionText = !['ALL', 'NEED'].includes(positionFilter) ? ` ${positionFilter}` : '';
     output.textContent = `No unrostered ${season}${positionText} prospects with usable Sleeper data were found yet.`;
+  } else {
+    output.className = 'prospect-grid';
+    output.innerHTML = recommendations.map(renderDraftProspectCard).join('');
+  }
+
+  if (!availability.capital.picks.length) {
+    capitalOutput.className = 'draft-capital-summary empty';
+    capitalOutput.textContent = `${teamName(league, rosterId)} has no remaining ${season} picks found in Sleeper.`;
+    availabilityOutput.className = 'draft-availability empty';
+    availabilityOutput.textContent = 'Acquire a pick or select another draft class to see likely options.';
+    if (availabilityStatus) availabilityStatus.textContent = 'No remaining picks';
     return;
   }
 
-  output.className = 'prospect-grid';
-  output.innerHTML = recommendations.map((prospect, index) => `
-    <article class="prospect-card">
-      <span class="prospect-rank">${index + 1}</span>
-      <h4>${escapeHtml(prospect.name)}</h4>
-      <p class="prospect-meta">${escapeHtml(prospect.position)} · ${escapeHtml(prospect.team)}${prospect.college ? ` · ${escapeHtml(prospect.college)}` : ''}${prospect.age ? ` · age ${escapeHtml(prospect.age)}` : ''}</p>
-      <div class="fit-score"><span>Team fit</span><strong>${displayNumber(prospect.fitScore)}</strong></div>
-      <div class="prospect-reasons">${prospect.reasons.slice(0, 3).map(reason => `<span class="badge">${escapeHtml(reason)}</span>`).join('')}</div>
-      <p class="prospect-note">Potential ${displayNumber(prospect.potentialScore)} · Need ${displayNumber(prospect.needScore)} · ${escapeHtml(prospect.confidence)} data confidence</p>
-    </article>`).join('');
+  capitalOutput.className = 'draft-capital-summary';
+  capitalOutput.innerHTML = renderDraftCapitalSummary(availability.capital);
+  availabilityOutput.className = 'draft-availability';
+  availabilityOutput.innerHTML = availability.groups.map(group => renderDraftAvailabilityGroup(group, league, rosterId)).join('');
+  if (availabilityStatus) {
+    availabilityStatus.textContent = `${availability.capital.picks.length} pick${availability.capital.picks.length === 1 ? '' : 's'} · ${availability.simulations || 0} simulations`;
+  }
 }
 
 function fillPlayerSeasonSelect() {
@@ -4118,7 +4478,11 @@ if (typeof module !== 'undefined' && module.exports) {
     playerRookieSeason,
     teamPositionNeedScores,
     draftProspectCandidates,
-    draftRecommendationsForTeam
+    scoredDraftProspectsForTeam,
+    draftRecommendationsForTeam,
+    draftSelectionRows,
+    teamDraftCapitalForSeason,
+    draftAvailabilityForTeam
   };
 }
 

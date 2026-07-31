@@ -193,14 +193,27 @@
           <div id="draftNeedsSummary" class="draft-needs-summary empty">Load a league to build a team-specific draft board.</div>
         </section>
 
-        <section class="panel">
-          <div class="panel-heading-row compact-heading-row">
-            <div><span class="panel-kicker">Personalized rankings</span><h3>Top targets</h3></div>
-            <span id="draftDataStatus" class="auto-note">Sleeper data</span>
-          </div>
-          <div id="draftRecommendations" class="prospect-grid empty">Load a league to view rookie targets.</div>
-          <p class="hint">Prospect coverage depends on when Sleeper publishes players, ADP, and projections for the selected class. Rankings are a fit tool, not a substitute for film or scouting.</p>
-        </section>
+        <div class="draft-board-layout">
+          <section class="panel draft-board-panel">
+            <div class="panel-heading-row compact-heading-row">
+              <div><span class="panel-kicker">Best overall fits</span><h3>Top targets</h3></div>
+              <span id="draftDataStatus" class="auto-note">Sleeper data</span>
+            </div>
+            <div id="draftRecommendations" class="prospect-grid empty">Load a league to view rookie targets.</div>
+            <p class="hint">The strongest available players for this roster, regardless of whether the team currently owns a pick in their expected range.</p>
+          </section>
+
+          <section class="panel draft-board-panel availability-panel">
+            <div class="panel-heading-row compact-heading-row">
+              <div><span class="panel-kicker">Team draft capital</span><h3>Likely at your picks</h3></div>
+              <span id="draftAvailabilityStatus" class="auto-note">Waiting for picks</span>
+            </div>
+            <div id="draftCapitalSummary" class="draft-capital-summary empty">Load a league to map this team’s picks.</div>
+            <div id="draftAvailability" class="draft-availability empty">Likely options will appear here.</div>
+            <p class="hint">Availability uses Sleeper’s draft order, traded picks, opponent roster needs, class value, and repeated mock-draft simulations. Projected picks are marked with “~”.</p>
+          </section>
+        </div>
+        <p class="hint draft-board-disclaimer">Prospect coverage depends on when Sleeper publishes players, ADP, projections, and NFL draft capital for the selected class. These rankings are a fit and availability estimate, not a substitute for film or scouting.</p>
       </section>
 
       <section id="recaps" class="tab-panel">

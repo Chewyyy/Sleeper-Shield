@@ -1412,7 +1412,9 @@ tbody tr:hover { background: rgba(100, 181, 255, 0.055); }
 .asset-list.empty,
 .trade-result.empty,
 .prospect-grid.empty,
-.draft-needs-summary.empty {
+.draft-needs-summary.empty,
+.draft-capital-summary.empty,
+.draft-availability.empty {
   min-height: 84px;
   display: grid;
   place-items: center;
@@ -1465,17 +1467,31 @@ tbody tr:hover { background: rgba(100, 181, 255, 0.055); }
 
 .draft-needs-summary strong { color: var(--text); }
 
+.draft-board-layout {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  align-items: start;
+}
+
+.draft-board-panel { min-width: 0; }
+.draft-board-disclaimer { margin: -2px 4px 18px; }
+
 .prospect-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: 1fr;
   gap: 11px;
 }
 
 .prospect-card {
   position: relative;
   overflow: hidden;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
   min-width: 0;
-  padding: 15px;
+  padding: 14px;
   border: 1px solid var(--line);
   border-radius: 17px;
   background:
@@ -1488,13 +1504,15 @@ tbody tr:hover { background: rgba(100, 181, 255, 0.055); }
   place-items: center;
   width: 28px;
   height: 28px;
-  margin-bottom: 15px;
+  margin: 0;
   border-radius: 9px;
   background: var(--accent-soft);
   color: var(--accent);
   font-size: 0.76rem;
   font-weight: 840;
 }
+
+.prospect-card-copy { min-width: 0; }
 
 .prospect-card h4 {
   margin: 0 0 5px;
@@ -1505,13 +1523,15 @@ tbody tr:hover { background: rgba(100, 181, 255, 0.055); }
   overflow-wrap: anywhere;
 }
 
-.prospect-meta { margin: 0 0 13px; color: var(--muted); font-size: 0.75rem; }
+.prospect-meta { margin: 0; color: var(--muted); font-size: 0.75rem; }
 
 .fit-score {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
+  min-width: 82px;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 5px;
   padding: 10px;
   border: 1px solid var(--line);
   border-radius: 12px;
@@ -1530,6 +1550,136 @@ tbody tr:hover { background: rgba(100, 181, 255, 0.055); }
 
 .prospect-reasons .badge { font-size: 0.65rem; }
 .prospect-note { margin: 11px 0 0; color: var(--muted); font-size: 0.74rem; line-height: 1.35; }
+
+.draft-capital-summary {
+  margin-bottom: 12px;
+  padding: 13px 14px;
+  border: 1px solid rgba(105, 220, 170, 0.22);
+  border-radius: 15px;
+  background: rgba(105, 220, 170, 0.055);
+}
+
+.draft-capital-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.draft-capital-heading span {
+  color: var(--muted);
+  font-size: 0.66rem;
+  font-weight: 780;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.draft-capital-heading strong { color: var(--text); font-size: 0.86rem; text-align: right; }
+.draft-capital-summary p { margin: 9px 0 0; color: var(--muted); font-size: 0.72rem; }
+
+.draft-pick-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 11px;
+}
+
+.draft-pick-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 29px;
+  padding: 5px 9px;
+  border: 1px solid rgba(105, 220, 170, 0.26);
+  border-radius: 9px;
+  background: rgba(105, 220, 170, 0.08);
+  color: var(--good);
+  font-size: 0.73rem;
+  font-weight: 820;
+}
+
+.draft-pick-chip.projected {
+  border-style: dashed;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.draft-availability { display: grid; gap: 11px; }
+
+.pick-availability-group {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 17px;
+  background: rgba(255, 255, 255, 0.027);
+}
+
+.pick-availability-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 13px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(100, 181, 255, 0.045);
+}
+
+.pick-availability-heading > div { display: flex; align-items: baseline; gap: 8px; }
+.pick-availability-heading small { color: var(--muted); font-size: 0.68rem; text-align: right; }
+.pick-number { color: var(--accent); font-size: 1.05rem; font-weight: 860; letter-spacing: -0.03em; }
+.pick-round-label { color: var(--muted); font-size: 0.68rem; font-weight: 730; text-transform: uppercase; letter-spacing: 0.05em; }
+.pick-options { display: grid; gap: 8px; padding: 9px; }
+
+.availability-player {
+  padding: 11px;
+  border: 1px solid rgba(255, 255, 255, 0.055);
+  border-radius: 13px;
+  background: rgba(4, 12, 21, 0.31);
+}
+
+.availability-player-topline {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.availability-player h4 { margin: 0 0 3px; color: var(--text); font-size: 0.87rem; line-height: 1.12; }
+.availability-player p { margin: 0; color: var(--muted); font-size: 0.69rem; }
+
+.availability-percent {
+  display: grid;
+  flex: 0 0 auto;
+  justify-items: end;
+  line-height: 1;
+}
+
+.availability-percent strong { color: var(--good); font-size: 0.92rem; }
+.availability-percent span { margin-top: 4px; color: var(--muted); font-size: 0.59rem; font-weight: 740; text-transform: uppercase; letter-spacing: 0.05em; }
+
+.availability-track {
+  height: 5px;
+  margin-top: 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.availability-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), var(--good));
+}
+
+.availability-player-footer {
+  display: flex;
+  gap: 12px;
+  margin-top: 8px;
+  color: var(--muted-2);
+  font-size: 0.66rem;
+  font-weight: 710;
+}
+
+.pick-options-empty { margin: 0; padding: 10px; color: var(--muted); font-size: 0.75rem; text-align: center; }
 
 .recap-controls { grid-template-columns: minmax(180px, 0.65fr) minmax(220px, 1fr) auto; }
 .recap-action-wrap { display: flex; align-items: end; }
@@ -1633,8 +1783,12 @@ tbody tr:hover { background: rgba(100, 181, 255, 0.055); }
   .tabs { grid-column: 1 / -1; grid-row: 2; justify-content: flex-start; order: 3; border-top: 1px solid var(--line); padding-top: 8px; }
   .league-switcher { justify-self: end; width: min(100%, 320px); }
   .hero { grid-template-columns: 1fr; }
-  .prospect-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .draft-board-layout { gap: 12px; }
   .settings-layout { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 920px) {
+  .draft-board-layout { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 760px) {
@@ -1746,7 +1900,14 @@ tbody tr:hover { background: rgba(100, 181, 255, 0.055); }
   .settings-grid { grid-template-columns: 1fr; }
 
   .prospect-grid { grid-template-columns: 1fr; }
-  .prospect-card { padding: 14px; }
+  .prospect-card { grid-template-columns: 30px minmax(0, 1fr); padding: 13px; }
+  .prospect-card .fit-score { grid-column: 2; width: 100%; min-width: 0; flex-direction: row; align-items: baseline; justify-content: space-between; }
+  .draft-capital-heading,
+  .pick-availability-heading { align-items: flex-start; }
+  .draft-capital-heading { display: grid; gap: 4px; }
+  .draft-capital-heading strong { text-align: left; }
+  .pick-availability-heading { display: grid; gap: 5px; }
+  .pick-availability-heading small { text-align: left; }
   .recap-action-wrap button { width: 100%; }
 
   .button-row.player-compare-actions,

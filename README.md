@@ -20,7 +20,8 @@ Then open `http://localhost:5173`.
 - Trade evaluation applies elite-asset scarcity and package consolidation before showing each team's separate projected lineup/depth impact.
 - Trade analysis updates automatically whenever a team, player, pick, or model setting changes.
 - Pick values use continuous early/mid/late bands, original-roster strength, format, and a future-year discount.
-- The rookie fit board ranks available prospects against each team's position needs using published Sleeper market, projection, and NFL draft-capital data.
+- The rookie fit board ranks the best overall roster fits on the left and likely options at each owned pick on the right.
+- Draft availability uses exact Sleeper draft order when published, projects unset slots from roster strength, follows traded-pick ownership, and runs repeated team-need-aware mock drafts.
 - League management lives in Settings; the active league selector is available globally.
 - Displayed numeric outputs are capped at two decimal places.
 
