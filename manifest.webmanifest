@@ -1,7 +1,7 @@
 {
   "name": "Sleeper Shield",
   "short_name": "Sleeper Shield",
-  "description": "League-aware fantasy football trade analysis, roster intelligence, rookie targets, and recaps.",
+  "description": "League-aware fantasy football trade analysis, free-agency recommendations, roster intelligence, rookie targets, and recaps.",
   "start_url": "./index.html",
   "display": "standalone",
   "background_color": "#07101c",

@@ -27,6 +27,7 @@
       <nav class="tabs" aria-label="Primary navigation">
         <button class="tab active" type="button" data-tab="dashboard" data-short="Home">Home</button>
         <button class="tab" type="button" data-tab="trade" data-short="Trade">Trade</button>
+        <button class="tab" type="button" data-tab="free-agency" data-short="FA">Free Agency</button>
         <button class="tab" type="button" data-tab="draft" data-short="Draft">Draft</button>
         <button class="tab" type="button" data-tab="recaps" data-short="Recaps">Recaps</button>
         <button class="tab" type="button" data-tab="players" data-short="Players">Players</button>
@@ -119,6 +120,21 @@
           </div>
         </section>
 
+        <section class="panel trade-targets-panel">
+          <div class="panel-heading-row compact-heading-row trade-target-heading">
+            <div><span class="panel-kicker">Roster-aware suggestions</span><h3>Recommended trade targets</h3></div>
+            <label class="trade-target-side-control">Build for
+              <select id="tradeTargetSideSelect" aria-label="Team receiving the suggested player">
+                <option value="A">Team A</option>
+                <option value="B">Team B</option>
+              </select>
+            </label>
+          </div>
+          <p id="tradeTargetSummary" class="trade-target-summary">Choose two teams to see the players who best address the selected roster’s needs.</p>
+          <div id="tradeTargetSuggestions" class="trade-target-grid empty">Recommended trade targets will appear here.</div>
+          <div id="generatedOfferStatus" class="generated-offer-status" aria-live="polite">Choose a target to generate a fair offer from the selected team’s players and draft picks.</div>
+        </section>
+
         <div class="grid two trade-assets-grid">
           <section class="panel asset-panel team-a-panel">
             <div class="panel-heading-row compact-heading-row">
@@ -156,6 +172,61 @@
           </div>
           <div id="tradeResult" class="trade-result empty" aria-live="polite">Add an asset to each side to see the live analysis.</div>
         </section>
+      </section>
+
+      <section id="free-agency" class="tab-panel">
+        <div class="page-heading split-heading">
+          <div>
+            <span class="eyebrow">Free agency analyzer</span>
+            <h2>Find the add. Know the drop.</h2>
+            <p>Available players are ranked for the selected roster using league scoring, projected lineup impact, positional need, efficiency, and dynasty value.</p>
+          </div>
+          <span class="live-pill"><span aria-hidden="true"></span> Roster-aware</span>
+        </div>
+
+        <section class="panel free-agency-controls-panel">
+          <div class="form-grid free-agency-controls">
+            <label>Team
+              <select id="freeAgencyTeamSelect"></select>
+            </label>
+            <label>Position
+              <select id="freeAgencyPositionFilter">
+                <option value="NEED">Prioritize team needs</option>
+                <option value="ALL">Best available</option>
+                <option value="QB">QB</option>
+                <option value="RB">RB</option>
+                <option value="WR">WR</option>
+                <option value="TE">TE</option>
+                <option value="DL">DL</option>
+                <option value="LB">LB</option>
+                <option value="DB">DB</option>
+                <option value="K">K</option>
+                <option value="DEF">DEF</option>
+              </select>
+            </label>
+          </div>
+          <div id="freeAgencyNeedsSummary" class="free-agency-needs-summary empty">Load a league to rank available players against a roster.</div>
+        </section>
+
+        <div class="free-agency-layout">
+          <section class="panel free-agent-panel">
+            <div class="panel-heading-row compact-heading-row">
+              <div><span class="panel-kicker">Best available fits</span><h3>Pickup targets</h3></div>
+              <span id="freeAgencyDataStatus" class="auto-note">Sleeper data</span>
+            </div>
+            <div id="freeAgentRecommendations" class="free-agent-list empty">Load a league to see free agents.</div>
+            <p class="hint">Only players not rostered in the active Sleeper league are included. Rankings update automatically when the team or position changes.</p>
+          </section>
+
+          <section class="panel drop-panel">
+            <div class="panel-heading-row compact-heading-row">
+              <div><span class="panel-kicker">Roster move analysis</span><h3>Potential drops</h3></div>
+              <span class="auto-note">Lowest-cost cuts</span>
+            </div>
+            <div id="dropRecommendations" class="drop-recommendations empty">Select a pickup target to see drop candidates.</div>
+            <p class="hint">“Trade, do not drop” flags players whose modeled value is too high to place on waivers even when another move improves the lineup.</p>
+          </section>
+        </div>
       </section>
 
       <section id="draft" class="tab-panel">
@@ -373,8 +444,9 @@
           </div>
           <div class="model-copy">
             <p><strong>Player value</strong> starts with format-specific Sleeper ADP, then blends league-scored projections, value over replacement, verified production, efficiency, age, and availability.</p>
-            <p><strong>Draft pick value</strong> uses round-specific early, middle, and late bands, applies a future-year discount, and estimates draft slot from the original roster’s projected strength.</p>
+            <p><strong>Draft pick value</strong> uses Sleeper’s exact slot when the order is set; otherwise it estimates early, middle, or late position from the original roster’s projected strength and applies a future-year discount.</p>
             <p><strong>Trade fairness</strong> applies elite-asset scarcity and package consolidation before comparing market value. Team fit is shown separately from price using each roster’s projected lineup and depth before and after the deal.</p>
+            <p><strong>Free agency</strong> ranks unrostered players by team need and projected lineup impact, then compares each pickup against the roster’s lowest-cost drop options.</p>
             <p><strong>Limitations:</strong> Sleeper Shield does not know private trade talks, breaking-news context, contract leagues, or off-platform draft capital. Use it as a decision aid, not a final authority.</p>
           </div>
         </section>

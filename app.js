@@ -80,6 +80,7 @@ const state = {
   leagues: [],
   savedLeagueIds: loadSavedLeagueIds(),
   selectedAssets: { A: [], B: [] },
+  freeAgency: { selectedPlayerId: '' },
   settings: loadSettings()
 };
 
@@ -1684,8 +1685,7 @@ function evaluateTrade() {
   const packageConfidence = (packageA.confidence + packageB.confidence) / 2;
   const projectionCoverage = safeNumber(league.projectionModel?.coverage, 0) * 100;
   const analysisConfidence = clampNumber(packageConfidence * 0.68 + projectionCoverage * 0.32, 0, 96);
-  const uncertainty = 1 - analysisConfidence / 100;
-  const fairBand = clampNumber(averagePackage * (0.065 + uncertainty * 0.04), 250, 1100);
+  const fairBand = tradeFairBand(league, packageA, packageB);
   const aNet = spread + aFit.adjustment;
   const bNet = -spread + bFit.adjustment;
   const edgePercent = Math.abs(spread) / averagePackage * 100;
@@ -1786,6 +1786,524 @@ function medianOf(values) {
   if (!nums.length) return 0;
   const mid = Math.floor(nums.length / 2);
   return nums.length % 2 ? nums[mid] : (nums[mid - 1] + nums[mid]) / 2;
+}
+
+function rosterPlayerIds(league, rosterId) {
+  return (league?.rosterMap?.get(Number(rosterId))?.players || []).map(String);
+}
+
+function freeAgentCandidates(league, rosterId, positionFilter = 'NEED', limit = 12) {
+  if (!league || !rosterId) return [];
+  const rostered = new Set(rosteredPlayerIds(league));
+  const beforePlayers = rosterPlayerIds(league, rosterId);
+  const needScores = teamPositionNeedScores(league, rosterId);
+  const activePositions = activeLeaguePositions(league);
+  const requestedPosition = String(positionFilter || 'NEED').toUpperCase();
+  const projectionIds = league.projectionModel?.players
+    ? [...league.projectionModel.players.keys()]
+    : [...state.projections.keys()];
+  const fallbackIds = Object.entries(state.players || {})
+    .filter(([, player]) => player?.active !== false && player?.team && safeNumber(player?.search_rank, 9999) < 600)
+    .map(([playerId]) => String(playerId));
+
+  const preliminary = [...new Set([...projectionIds.map(String), ...fallbackIds])]
+    .filter(playerId => !rostered.has(playerId))
+    .map(playerId => {
+      const player = getPlayer(playerId) || {};
+      const position = playerPrimaryPosition(playerId);
+      const value = playerValue(league, playerId);
+      const needScore = safeNumber(needScores[position], 0);
+      return { playerId, player, position, value, needScore };
+    })
+    .filter(row => activePositions.has(row.position))
+    .filter(row => !POSITION_ORDER.includes(requestedPosition) || row.position === requestedPosition)
+    .filter(row => row.player.active !== false && (row.player.team || row.position === 'DEF'))
+    .filter(row => row.value.forecastPpg > 0 || row.value.marketAdp || safeNumber(row.player.search_rank, 9999) < 600)
+    .sort((a, b) => {
+      const needMultiplier = requestedPosition === 'NEED' ? 1500 : 650;
+      const aPriority = a.value.value + a.needScore * needMultiplier + Math.max(0, a.value.vorp) * 95 + a.value.confidenceScore * 2;
+      const bPriority = b.value.value + b.needScore * needMultiplier + Math.max(0, b.value.vorp) * 95 + b.value.confidenceScore * 2;
+      return bPriority - aPriority || b.value.value - a.value.value;
+    })
+    .slice(0, Math.max(80, safeNumber(limit, 12) * 8));
+
+  return preliminary.map(row => {
+    const afterPlayers = [...beforePlayers, row.playerId];
+    const fit = teamFitImpact(league, rosterId, beforePlayers, afterPlayers, row.value.value);
+    const fitScore = roundNum(clampNumber(
+      38
+        + row.needScore * 26
+        + clamp01(fit.lineupDelta / 8) * 22
+        + clamp01(fit.depthDelta / 4) * 8
+        + clamp01(Math.max(0, row.value.vorp) / 10) * 8
+        + clamp01(row.value.confidenceScore / 100) * 5,
+      1,
+      99
+    ), 0);
+    const needMultiplier = requestedPosition === 'NEED' ? 1550 : 700;
+    const priority = row.value.value * 0.62
+      + row.needScore * needMultiplier
+      + fit.lineupDelta * 230
+      + fit.depthDelta * 95
+      + Math.max(0, row.value.vorp) * 110
+      + row.value.confidenceScore * 2;
+    return { ...row, fit, fitScore, priority: roundNum(priority, 2) };
+  }).sort((a, b) => b.priority - a.priority || b.value.value - a.value.value)
+    .slice(0, Math.max(1, safeNumber(limit, 12)));
+}
+
+function dropCandidatesForPickup(league, rosterId, freeAgentId, limit = 6) {
+  if (!league || !rosterId || !freeAgentId) return [];
+  const beforePlayers = rosterPlayerIds(league, rosterId);
+  if (!beforePlayers.length) return [];
+  const targetId = String(freeAgentId);
+  const targetValue = playerValue(league, targetId);
+  const optimalStarters = new Set(optimalProjectedLineupScore(league, beforePlayers).selected);
+  const roster = league.rosterMap.get(Number(rosterId)) || {};
+  const taxi = new Set((roster.taxi || []).map(String));
+  const reserve = new Set((roster.reserve || []).map(String));
+
+  return beforePlayers.map(dropPlayerId => {
+    const dropValue = playerValue(league, dropPlayerId);
+    const afterPlayers = beforePlayers.filter(playerId => playerId !== dropPlayerId);
+    if (!afterPlayers.includes(targetId)) afterPlayers.push(targetId);
+    const referenceValue = Math.max(targetValue.value, dropValue.value);
+    const fit = teamFitImpact(league, rosterId, beforePlayers, afterPlayers, referenceValue);
+    const netMarketValue = targetValue.value - dropValue.value;
+    const teamContextNet = roundNum(netMarketValue + fit.adjustment, 0);
+    const isStarter = optimalStarters.has(dropPlayerId);
+    const isTaxi = taxi.has(dropPlayerId);
+    const isReserve = reserve.has(dropPlayerId);
+    const tradeInstead = dropValue.value >= 2500 && targetValue.value < dropValue.value * 1.15;
+    const protectionPenalty = (isStarter && fit.lineupDelta < -0.25 ? 500 : 0)
+      + (isTaxi && isDynastyLeague(league) ? 260 : 0)
+      + (tradeInstead ? 900 : 0);
+    const rankingScore = teamContextNet + fit.lineupDelta * 125 + fit.depthDelta * 55 - protectionPenalty;
+    let verdict = 'Hold roster';
+    let tone = 'bad';
+    if (tradeInstead) {
+      verdict = 'Trade, do not drop';
+      tone = 'warn';
+    } else if (teamContextNet >= 400 && fit.lineupDelta >= -0.25) {
+      verdict = 'Best add/drop fit';
+      tone = 'good';
+    } else if (teamContextNet >= 0 && fit.lineupDelta >= -0.75) {
+      verdict = 'Marginal upgrade';
+      tone = 'warn';
+    }
+    return {
+      playerId: dropPlayerId,
+      player: getPlayer(dropPlayerId) || {},
+      value: dropValue,
+      targetValue,
+      fit,
+      netMarketValue,
+      teamContextNet,
+      isStarter,
+      isTaxi,
+      isReserve,
+      tradeInstead,
+      rankingScore,
+      verdict,
+      tone
+    };
+  }).sort((a, b) => b.rankingScore - a.rankingScore || a.value.value - b.value.value)
+    .slice(0, Math.max(1, safeNumber(limit, 6)));
+}
+
+function tradeTargetRecommendations(league, acquiringRosterId, partnerRosterId, limit = 6) {
+  if (!league || !acquiringRosterId || !partnerRosterId || Number(acquiringRosterId) === Number(partnerRosterId)) return [];
+  const acquiringPlayers = rosterPlayerIds(league, acquiringRosterId);
+  const partnerPlayers = rosterPlayerIds(league, partnerRosterId);
+  const acquiringNeeds = teamPositionNeedScores(league, acquiringRosterId);
+  const activePositions = activeLeaguePositions(league);
+
+  return partnerPlayers.map(playerId => {
+    const position = playerPrimaryPosition(playerId);
+    const value = playerValue(league, playerId);
+    const acquiringAfter = [...acquiringPlayers, playerId];
+    const partnerAfter = partnerPlayers.filter(id => id !== playerId);
+    const fit = teamFitImpact(league, acquiringRosterId, acquiringPlayers, acquiringAfter, value.value);
+    const sellerFit = teamFitImpact(league, partnerRosterId, partnerPlayers, partnerAfter, value.value);
+    const needScore = safeNumber(acquiringNeeds[position], 0);
+    const sellerFriction = clamp01(Math.max(0, -sellerFit.lineupDelta) / 8);
+    const targetScore = roundNum(clampNumber(
+      34
+        + needScore * 28
+        + clamp01(fit.lineupDelta / 8) * 26
+        + clamp01(fit.depthDelta / 4) * 8
+        + clamp01(Math.max(0, value.vorp) / 10) * 8
+        + clamp01(value.value / 9000) * 5
+        - sellerFriction * 7,
+      1,
+      99
+    ), 0);
+    const priority = needScore * 1650
+      + fit.lineupDelta * 240
+      + fit.depthDelta * 95
+      + Math.max(0, value.vorp) * 110
+      + value.value * 0.18
+      - sellerFriction * 420;
+    return { playerId, player: getPlayer(playerId) || {}, position, value, fit, sellerFit, needScore, targetScore, priority };
+  }).filter(row => activePositions.has(row.position) && row.value.value > 30)
+    .sort((a, b) => b.priority - a.priority || b.value.value - a.value.value)
+    .slice(0, Math.max(1, safeNumber(limit, 6)));
+}
+
+function tradeFairBand(league, packageA, packageB) {
+  const averagePackage = Math.max(1, (safeNumber(packageA?.adjusted) + safeNumber(packageB?.adjusted)) / 2);
+  const packageConfidence = (safeNumber(packageA?.confidence, 55) + safeNumber(packageB?.confidence, 55)) / 2;
+  const projectionCoverage = safeNumber(league?.projectionModel?.coverage, 0) * 100;
+  const analysisConfidence = clampNumber(packageConfidence * 0.68 + projectionCoverage * 0.32, 0, 96);
+  const uncertainty = 1 - analysisConfidence / 100;
+  return clampNumber(averagePackage * (0.065 + uncertainty * 0.04), 250, 1100);
+}
+
+function offerAssetNeedScore(league, recipientRosterId, asset, needScores = null) {
+  if (asset.type === 'player') {
+    const scores = needScores || teamPositionNeedScores(league, recipientRosterId);
+    return safeNumber(scores[playerPrimaryPosition(asset.playerId)], 0);
+  }
+  const recipientRank = teamStrengthRank(league, recipientRosterId);
+  return clampNumber(0.35 + (1 - recipientRank) * 0.45, 0.35, 0.8);
+}
+
+function generateFairTradeOffer(league, acquiringRosterId, partnerRosterId, targetPlayerId) {
+  if (!league || !acquiringRosterId || !partnerRosterId || !targetPlayerId) return null;
+  if (Number(acquiringRosterId) === Number(partnerRosterId)) return null;
+  const targetId = String(targetPlayerId);
+  if (!rosterPlayerIds(league, partnerRosterId).includes(targetId)) return null;
+
+  const targetAsset = { type: 'player', playerId: targetId };
+  const targetPackage = packageValuation(league, [targetAsset]);
+  const targetReference = Math.max(1, targetPackage.adjusted);
+  const acquiringPlayers = rosterPlayerIds(league, acquiringRosterId);
+  const partnerPlayers = rosterPlayerIds(league, partnerRosterId);
+  const partnerNeeds = teamPositionNeedScores(league, partnerRosterId);
+  const candidateAssets = [
+    ...acquiringPlayers.map(playerId => ({ type: 'player', playerId })),
+    ...ownedPicksForRoster(league, acquiringRosterId)
+  ];
+
+  const rankedCandidates = candidateAssets.map(asset => {
+    const detail = assetValue(league, asset);
+    const needScore = offerAssetNeedScore(league, partnerRosterId, asset, partnerNeeds);
+    let senderCost = 0;
+    if (asset.type === 'player') {
+      const afterRemoval = acquiringPlayers.filter(playerId => playerId !== String(asset.playerId));
+      const removalFit = teamFitImpact(league, acquiringRosterId, acquiringPlayers, afterRemoval, detail.value);
+      senderCost = Math.max(0, -removalFit.adjustment);
+    }
+    const closeness = Math.abs(detail.value - targetReference) / targetReference;
+    const overpay = detail.value > targetReference * 1.28 ? (detail.value / targetReference - 1.28) * 2.5 : 0;
+    const rankScore = closeness + senderCost / targetReference * 0.72 + overpay - needScore * 0.34;
+    return { asset, detail, needScore, senderCost, rankScore };
+  }).filter(row => safeNumber(row.detail.value) > 25)
+    .sort((a, b) => a.rankScore - b.rankScore || b.detail.value - a.detail.value);
+
+  const needFirst = rankedCandidates.slice().sort((a, b) => b.needScore - a.needScore || a.rankScore - b.rankScore).slice(0, 8);
+  const valuePieces = rankedCandidates.filter(row => row.detail.value <= targetReference * 0.85).slice(0, 8);
+  const candidateMap = new Map();
+  [...rankedCandidates.slice(0, 16), ...needFirst, ...valuePieces].forEach(row => candidateMap.set(assetKey(row.asset), row));
+  const candidates = [...candidateMap.values()].slice(0, 22);
+  if (!candidates.length) return null;
+
+  const combinations = candidates.map(row => [row]);
+  for (let i = 0; i < candidates.length; i += 1) {
+    for (let j = i + 1; j < candidates.length; j += 1) combinations.push([candidates[i], candidates[j]]);
+  }
+  const triplePool = candidates.slice(0, 14);
+  for (let i = 0; i < triplePool.length; i += 1) {
+    for (let j = i + 1; j < triplePool.length; j += 1) {
+      for (let k = j + 1; k < triplePool.length; k += 1) combinations.push([triplePool[i], triplePool[j], triplePool[k]]);
+    }
+  }
+
+  let best = null;
+  for (const combination of combinations) {
+    const offeredAssets = combination.map(row => row.asset);
+    const offerPackage = packageValuation(league, offeredAssets);
+    if (!offerPackage.adjusted) continue;
+    const fairBand = tradeFairBand(league, offerPackage, targetPackage);
+    const marketDifference = offerPackage.adjusted - targetPackage.adjusted;
+    const marketGap = Math.abs(marketDifference);
+    const acquiringAfter = simulateTradePlayers(league, acquiringRosterId, offeredAssets, [targetAsset]);
+    const partnerAfter = simulateTradePlayers(league, partnerRosterId, [targetAsset], offeredAssets);
+    const referenceValue = Math.max(offerPackage.adjusted, targetPackage.adjusted);
+    const acquiringFit = teamFitImpact(league, acquiringRosterId, acquiringPlayers, acquiringAfter, referenceValue);
+    const partnerFit = teamFitImpact(league, partnerRosterId, partnerPlayers, partnerAfter, referenceValue);
+    const acquiringNet = targetPackage.adjusted - offerPackage.adjusted + acquiringFit.adjustment;
+    const partnerNet = offerPackage.adjusted - targetPackage.adjusted + partnerFit.adjustment;
+    const weightedNeed = combination.reduce((sum, row) => sum + row.needScore * row.detail.value, 0) / Math.max(1, offerPackage.raw);
+    const outsideFairRange = marketGap > fairBand;
+    const fairnessPenalty = outsideFairRange ? 1000 + (marketGap - fairBand) / fairBand * 260 : 0;
+    const contextImbalance = Math.abs(acquiringNet - partnerNet) / Math.max(1, fairBand * 2);
+    const score = fairnessPenalty
+      + marketGap / Math.max(1, fairBand) * 100
+      + contextImbalance * 18
+      + (offeredAssets.length - 1) * 4
+      - weightedNeed * 11
+      - Math.max(0, acquiringFit.lineupDelta) * 1.5
+      - Math.max(0, partnerFit.lineupDelta);
+    const signature = offeredAssets.map(assetKey).sort().join('|');
+    if (!best || score < best.score || (score === best.score && signature < best.signature)) {
+      best = {
+        targetAsset,
+        targetPackage,
+        offeredAssets,
+        offerPackage,
+        fairBand: roundNum(fairBand, 0),
+        marketDifference: roundNum(marketDifference, 0),
+        acquiringFit,
+        partnerFit,
+        acquiringNet: roundNum(acquiringNet, 0),
+        partnerNet: roundNum(partnerNet, 0),
+        fair: !outsideFairRange,
+        score,
+        signature,
+        recipientNeedScore: roundNum(weightedNeed * 100, 0)
+      };
+    }
+  }
+  return best;
+}
+
+function freeAgentReasonLabels(row) {
+  const labels = [];
+  if (row.needScore >= 0.66) labels.push('Urgent roster need');
+  else if (row.needScore >= 0.34) labels.push('Position of need');
+  if (row.fit.lineupDelta >= 0.5) labels.push(`${displaySignedNumber(row.fit.lineupDelta)} lineup PPG`);
+  else if (row.fit.depthDelta > 0.15) labels.push('Improves depth');
+  if (row.value.vorp > 0) labels.push(`${displaySignedNumber(row.value.vorp)} VORP`);
+  labels.push(`${row.value.confidence} confidence`);
+  return labels.slice(0, 4);
+}
+
+function renderFreeAgentCard(row, selected = false) {
+  const ageContext = dynastyAgeSummary(getSelectedLeague(), row.playerId);
+  return `
+    <article class="free-agent-card ${selected ? 'selected' : ''}">
+      <div class="free-agent-card-topline">
+        <div class="free-agent-identity">
+          <span class="position-token">${escapeHtml(row.position)}</span>
+          <div>
+            <h4>${escapeHtml(row.value.name)}</h4>
+            <p>${escapeHtml(row.player.team || 'FA')} · Value ${displayNumber(row.value.value, 0)} · ${displayNumber(row.value.forecastPpg)} forecast PPG</p>
+          </div>
+        </div>
+        <div class="fit-score compact-fit-score"><strong>${displayNumber(row.fitScore, 0)}</strong><span>fit</span></div>
+      </div>
+      <div class="recommendation-badges">${freeAgentReasonLabels(row).map(label => `<span class="badge">${escapeHtml(label)}</span>`).join('')}</div>
+      ${ageContext ? `<p class="card-context">${escapeHtml(ageContext)}</p>` : ''}
+      <button class="secondary analyze-pickup-button" type="button" data-analyze-free-agent="${escapeHtml(row.playerId)}">${selected ? 'Analyzing pickup' : 'Analyze pickup'}</button>
+    </article>`;
+}
+
+function renderDropCandidateCard(row) {
+  const rosterRole = row.isTaxi ? 'Taxi' : row.isReserve ? 'IR/reserve' : row.isStarter ? 'Projected starter' : 'Depth player';
+  return `
+    <article class="drop-candidate-card">
+      <div class="drop-candidate-topline">
+        <div>
+          <span class="badge ${row.tone}">${escapeHtml(row.verdict)}</span>
+          <h4>${escapeHtml(row.value.name)}</h4>
+          <p>${escapeHtml(row.value.position)} · ${escapeHtml(rosterRole)} · Value ${displayNumber(row.value.value, 0)}</p>
+        </div>
+        <div class="move-score ${row.teamContextNet >= 0 ? 'positive' : 'negative'}">
+          <strong>${displaySignedNumber(row.teamContextNet, 0)}</strong>
+          <span>team net</span>
+        </div>
+      </div>
+      <div class="drop-impact-grid">
+        <span><small>Value change</small><strong>${displaySignedNumber(row.netMarketValue, 0)}</strong></span>
+        <span><small>Lineup change</small><strong>${displaySignedNumber(row.fit.lineupDelta)} PPG</strong></span>
+        <span><small>Depth change</small><strong>${displaySignedNumber(row.fit.depthDelta)}</strong></span>
+      </div>
+    </article>`;
+}
+
+function fillFreeAgencyControls() {
+  const league = getSelectedLeague();
+  const select = $('freeAgencyTeamSelect');
+  if (!select) return;
+  const previous = select.value;
+  select.innerHTML = league
+    ? league.rosters.map(roster => `<option value="${roster.roster_id}">${escapeHtml(teamName(league, roster.roster_id))}</option>`).join('')
+    : '<option value="">No league loaded</option>';
+  if (previous && [...select.options].some(option => option.value === previous)) select.value = previous;
+}
+
+function renderFreeAgencyAnalyzer() {
+  const listOutput = $('freeAgentRecommendations');
+  const dropOutput = $('dropRecommendations');
+  const summary = $('freeAgencyNeedsSummary');
+  const status = $('freeAgencyDataStatus');
+  if (!listOutput || !dropOutput || !summary) return;
+  const league = getSelectedLeague();
+  const rosterId = Number($('freeAgencyTeamSelect')?.value);
+  if (!league || !rosterId) {
+    summary.className = 'free-agency-needs-summary empty';
+    summary.textContent = 'Load a league to rank available players against a roster.';
+    listOutput.className = 'free-agent-list empty';
+    listOutput.textContent = 'Free-agent recommendations will appear here.';
+    dropOutput.className = 'drop-recommendations empty';
+    dropOutput.textContent = 'Select a player to see possible drops.';
+    if (status) status.textContent = 'Waiting for league';
+    return;
+  }
+
+  const positionFilter = $('freeAgencyPositionFilter')?.value || 'NEED';
+  const recommendations = freeAgentCandidates(league, rosterId, positionFilter, 12);
+  summary.className = 'free-agency-needs-summary';
+  summary.innerHTML = `<strong>${escapeHtml(teamName(league, rosterId))}</strong><span>${escapeHtml(rosterNeedsSummary(league, rosterId))}</span>`;
+  if (status) status.textContent = recommendations.length ? `${recommendations.length} best available` : 'No candidates found';
+
+  if (!recommendations.length) {
+    state.freeAgency.selectedPlayerId = '';
+    listOutput.className = 'free-agent-list empty';
+    listOutput.textContent = 'No unrostered players with usable Sleeper projections were found for this filter.';
+    dropOutput.className = 'drop-recommendations empty';
+    dropOutput.textContent = 'Try another position or select Best available.';
+    return;
+  }
+
+  if (!recommendations.some(row => row.playerId === String(state.freeAgency.selectedPlayerId))) {
+    state.freeAgency.selectedPlayerId = recommendations[0].playerId;
+  }
+  listOutput.className = 'free-agent-list';
+  listOutput.innerHTML = recommendations.map(row => renderFreeAgentCard(row, row.playerId === String(state.freeAgency.selectedPlayerId))).join('');
+  listOutput.querySelectorAll('[data-analyze-free-agent]').forEach(button => {
+    button.addEventListener('click', () => {
+      state.freeAgency.selectedPlayerId = button.dataset.analyzeFreeAgent;
+      renderFreeAgencyAnalyzer();
+    });
+  });
+
+  const selected = recommendations.find(row => row.playerId === String(state.freeAgency.selectedPlayerId)) || recommendations[0];
+  const drops = dropCandidatesForPickup(league, rosterId, selected.playerId, 6);
+  const best = drops[0];
+  dropOutput.className = 'drop-recommendations';
+  dropOutput.innerHTML = `
+    <div class="pickup-analysis-header">
+      <span class="position-token">${escapeHtml(selected.position)}</span>
+      <div>
+        <span class="panel-kicker">Pickup analysis</span>
+        <h3>${escapeHtml(selected.value.name)}</h3>
+        <p>${best ? `${escapeHtml(best.verdict)} with ${escapeHtml(best.value.name)} as the first cut candidate.` : 'No rostered player needs to be dropped.'}</p>
+      </div>
+    </div>
+    ${drops.length ? drops.map(renderDropCandidateCard).join('') : '<div class="drop-recommendations empty">No drop candidates found.</div>'}`;
+}
+
+function tradeTargetReasonLabels(row) {
+  const labels = [];
+  if (row.needScore >= 0.66) labels.push('Urgent need');
+  else if (row.needScore >= 0.34) labels.push('Roster need');
+  if (row.fit.lineupDelta >= 0.35) labels.push(`${displaySignedNumber(row.fit.lineupDelta)} lineup PPG`);
+  else if (row.fit.depthDelta > 0.1) labels.push('Depth upgrade');
+  if (row.sellerFit.lineupDelta >= -0.25) labels.push('Partner has cover');
+  if (row.value.vorp > 0) labels.push(`${displaySignedNumber(row.value.vorp)} VORP`);
+  return labels.slice(0, 4);
+}
+
+function renderTradeTargetSuggestions() {
+  const output = $('tradeTargetSuggestions');
+  const summary = $('tradeTargetSummary');
+  const status = $('generatedOfferStatus');
+  if (!output || !summary) return;
+  if (status) status.className = 'generated-offer-status';
+  const league = getSelectedLeague();
+  const targetSideSelect = $('tradeTargetSideSelect');
+  if (league && targetSideSelect) {
+    const teamAId = Number($('teamASelect')?.value);
+    const teamBId = Number($('teamBSelect')?.value);
+    const optionA = [...targetSideSelect.options].find(option => option.value === 'A');
+    const optionB = [...targetSideSelect.options].find(option => option.value === 'B');
+    if (optionA && teamAId) optionA.textContent = `Team A · ${teamName(league, teamAId)}`;
+    if (optionB && teamBId) optionB.textContent = `Team B · ${teamName(league, teamBId)}`;
+  }
+  const side = targetSideSelect?.value === 'B' ? 'B' : 'A';
+  const acquiringRosterId = Number($(side === 'A' ? 'teamASelect' : 'teamBSelect')?.value);
+  const partnerRosterId = Number($(side === 'A' ? 'teamBSelect' : 'teamASelect')?.value);
+  if (!league || !acquiringRosterId || !partnerRosterId || acquiringRosterId === partnerRosterId) {
+    summary.textContent = 'Choose two different teams to see recommended targets.';
+    output.className = 'trade-target-grid empty';
+    output.textContent = 'Recommended trade targets will appear here.';
+    if (status) status.textContent = 'Waiting for teams';
+    return;
+  }
+
+  const rows = tradeTargetRecommendations(league, acquiringRosterId, partnerRosterId, 6);
+  summary.innerHTML = `<strong>${escapeHtml(teamName(league, acquiringRosterId))}</strong> targets from ${escapeHtml(teamName(league, partnerRosterId))}, ranked by lineup gain, positional need, market value, and the partner’s ability to replace the player.`;
+  if (!rows.length) {
+    output.className = 'trade-target-grid empty';
+    output.textContent = 'No usable targets were found on this roster.';
+    if (status) status.textContent = 'No target selected';
+    return;
+  }
+
+  output.className = 'trade-target-grid';
+  output.innerHTML = rows.map(row => `
+    <article class="trade-target-card">
+      <div class="trade-target-card-topline">
+        <span class="position-token">${escapeHtml(row.position)}</span>
+        <div class="target-score"><strong>${displayNumber(row.targetScore, 0)}</strong><span>fit</span></div>
+      </div>
+      <h4>${escapeHtml(row.value.name)}</h4>
+      <p>${escapeHtml(row.player.team || 'FA')} · Value ${displayNumber(row.value.value, 0)} · ${displayNumber(row.value.forecastPpg)} forecast PPG</p>
+      <div class="recommendation-badges">${tradeTargetReasonLabels(row).map(label => `<span class="badge">${escapeHtml(label)}</span>`).join('')}</div>
+      <button class="primary generate-offer-button" type="button" data-generate-offer="${escapeHtml(row.playerId)}" data-acquiring-side="${side}">Generate offer</button>
+    </article>`).join('');
+  output.querySelectorAll('[data-generate-offer]').forEach(button => {
+    button.addEventListener('click', () => {
+      output.querySelectorAll('[data-generate-offer]').forEach(item => { item.disabled = true; });
+      if (status) status.textContent = 'Building the closest fair package from roster assets and owned picks…';
+      setTimeout(() => {
+        try {
+          applyGeneratedTradeOffer(button.dataset.generateOffer, button.dataset.acquiringSide);
+        } catch (err) {
+          console.error(err);
+          if (status) status.textContent = 'The offer could not be generated. Try another target.';
+          output.querySelectorAll('[data-generate-offer]').forEach(item => { item.disabled = false; });
+        }
+      }, 20);
+    });
+  });
+  if (status) status.textContent = 'Choose a target to build an offer';
+}
+
+function compactAssetLabel(league, asset) {
+  const detail = assetValue(league, asset);
+  return asset.type === 'player' ? detail.name : detail.label;
+}
+
+function applyGeneratedTradeOffer(targetPlayerId, acquiringSide = 'A') {
+  const league = getSelectedLeague();
+  const side = acquiringSide === 'B' ? 'B' : 'A';
+  const partnerSide = side === 'A' ? 'B' : 'A';
+  const acquiringRosterId = Number($(side === 'A' ? 'teamASelect' : 'teamBSelect')?.value);
+  const partnerRosterId = Number($(side === 'A' ? 'teamBSelect' : 'teamASelect')?.value);
+  const status = $('generatedOfferStatus');
+  const offer = generateFairTradeOffer(league, acquiringRosterId, partnerRosterId, targetPlayerId);
+  if (!offer) {
+    if (status) status.textContent = 'No viable offer could be built from the selected roster and draft capital.';
+    $('tradeTargetSuggestions')?.querySelectorAll('[data-generate-offer]').forEach(item => { item.disabled = false; });
+    return;
+  }
+
+  state.selectedAssets[side] = offer.offeredAssets.map(asset => ({ ...asset }));
+  state.selectedAssets[partnerSide] = [{ ...offer.targetAsset }];
+  renderAssetList('A');
+  renderAssetList('B');
+  const offeredNames = offer.offeredAssets.map(asset => compactAssetLabel(league, asset)).join(' + ');
+  const fairnessText = offer.fair ? 'Fair offer generated' : 'Closest modeled offer generated';
+  if (status) {
+    status.className = `generated-offer-status ${offer.fair ? 'good' : 'warn'}`;
+    status.textContent = `${fairnessText}: ${offeredNames} for ${playerName(targetPlayerId)}. Seller-side market difference ${displaySignedNumber(offer.marketDifference, 0)} with a ±${displayNumber(offer.fairBand, 0)} fair range.`;
+  }
+  $('tradeTargetSuggestions')?.querySelectorAll('[data-generate-offer]').forEach(item => { item.disabled = false; });
+  scheduleTradeEvaluation(0);
+  setTimeout(() => $('tradeResult')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 40);
 }
 
 function renderAssetList(side) {
@@ -2761,6 +3279,7 @@ function fillLeagueSelects() {
     : '<option value="">No league loaded</option>';
   if (previous && state.leagues.some(l => String(l.league_id) === String(previous))) el.value = previous;
   fillTeamSelects();
+  fillFreeAgencyControls();
   fillRecapWeeks();
   fillPlayerSeasonSelect();
   fillDraftControls();
@@ -3574,7 +4093,10 @@ function fillPlayerSeasonSelect() {
 function selectLeagueAcrossApp(leagueId) {
   if (!leagueId) return;
   const previousLeagueId = $('globalLeagueSelect')?.value || localStorage.getItem(STORAGE_KEYS.selectedLeague);
-  if (previousLeagueId && String(previousLeagueId) !== String(leagueId)) state.selectedAssets = { A: [], B: [] };
+  if (previousLeagueId && String(previousLeagueId) !== String(leagueId)) {
+    state.selectedAssets = { A: [], B: [] };
+    state.freeAgency.selectedPlayerId = '';
+  }
   localStorage.setItem(STORAGE_KEYS.selectedLeague, leagueId);
   const selector = $('globalLeagueSelect');
   if (selector && [...selector.options].some(option => String(option.value) === String(leagueId))) selector.value = leagueId;
@@ -3589,6 +4111,7 @@ function activateTab(tabId) {
     tab.setAttribute('aria-current', active ? 'page' : 'false');
   });
   document.querySelectorAll('.tab-panel').forEach(panel => panel.classList.toggle('active', panel.id === tabId));
+  if (tabId === 'free-agency') renderFreeAgencyAnalyzer();
   if (tabId === 'draft') renderDraftRecommendations();
   if (tabId === 'recaps') scheduleRecapGeneration(0);
 }
@@ -4284,6 +4807,7 @@ async function loadAll(idsOverride = null) {
     if (!stored && loaded[0]) localStorage.setItem(STORAGE_KEYS.selectedLeague, loaded[0].league_id);
     if (stored && !loaded.some(l => String(l.league_id) === String(stored)) && loaded[0]) localStorage.setItem(STORAGE_KEYS.selectedLeague, loaded[0].league_id);
     state.selectedAssets = { A: [], B: [] };
+    state.freeAgency.selectedPlayerId = '';
     renderEverything();
   } finally {
     setBusy(false);
@@ -4297,6 +4821,8 @@ function renderEverything() {
   renderTables();
   renderAssetList('A');
   renderAssetList('B');
+  renderTradeTargetSuggestions();
+  renderFreeAgencyAnalyzer();
   updateDynastyOnlyControls();
 }
 
@@ -4313,6 +4839,8 @@ function applyModelSettingsFromUI() {
   renderTables();
   renderAssetList('A');
   renderAssetList('B');
+  renderTradeTargetSuggestions();
+  renderFreeAgencyAnalyzer();
   renderDraftRecommendations();
   const status = $('modelSaveStatus');
   if (status) status.textContent = 'Saved';
@@ -4350,6 +4878,7 @@ function wireEvents() {
     if (!window.confirm('Clear every saved Sleeper league from this device?')) return;
     state.leagues = [];
     state.selectedAssets = { A: [], B: [] };
+    state.freeAgency.selectedPlayerId = '';
     localStorage.removeItem(STORAGE_KEYS.leagues);
     localStorage.removeItem(STORAGE_KEYS.selectedLeague);
     state.savedLeagueIds = [];
@@ -4377,6 +4906,7 @@ function wireEvents() {
   $('globalLeagueSelect')?.addEventListener('change', event => {
     localStorage.setItem(STORAGE_KEYS.selectedLeague, event.target.value);
     state.selectedAssets = { A: [], B: [] };
+    state.freeAgency.selectedPlayerId = '';
     renderEverything();
   });
 
@@ -4388,12 +4918,16 @@ function wireEvents() {
         const alternative = [...otherSelect.options].find(option => option.value !== $(id).value);
         if (alternative) otherSelect.value = alternative.value;
       }
-      state.selectedAssets[changedSide] = [];
+      state.selectedAssets = { A: [], B: [] };
       fillTeamPlayerSelects();
-      renderAssetList(changedSide);
+      renderAssetList('A');
+      renderAssetList('B');
+      renderTradeTargetSuggestions();
       scheduleTradeEvaluation();
     });
   });
+
+  $('tradeTargetSideSelect')?.addEventListener('change', renderTradeTargetSuggestions);
 
   const tradeAssetInputs = [
     { side: 'A', selectId: 'teamAPlayerSelect', searchId: 'teamAPlayerSearch' },
@@ -4419,6 +4953,14 @@ function wireEvents() {
     renderAssetList('A');
     renderAssetList('B');
     setTradeResultMessage('Add an asset to each side to see the live analysis.');
+    renderTradeTargetSuggestions();
+  });
+
+  ['freeAgencyTeamSelect', 'freeAgencyPositionFilter'].forEach(id => {
+    $(id)?.addEventListener('change', () => {
+      state.freeAgency.selectedPlayerId = '';
+      renderFreeAgencyAnalyzer();
+    });
   });
 
   $('recapWeekSelect')?.addEventListener('change', () => scheduleRecapGeneration(0));
@@ -4536,6 +5078,11 @@ if (typeof module !== 'undefined' && module.exports) {
     optimalProjectedLineupScore,
     rosterNeedProfile,
     teamFitImpact,
+    freeAgentCandidates,
+    dropCandidatesForPickup,
+    tradeTargetRecommendations,
+    tradeFairBand,
+    generateFairTradeOffer,
     adjustPackageValues,
     packageValuation,
     interpolatePickBand,

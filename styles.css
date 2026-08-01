@@ -1411,6 +1411,10 @@ tbody tr:hover { background: rgba(100, 181, 255, 0.055); }
 
 .asset-list.empty,
 .trade-result.empty,
+.trade-target-grid.empty,
+.free-agent-list.empty,
+.free-agency-needs-summary.empty,
+.drop-recommendations.empty,
 .prospect-grid.empty,
 .draft-needs-summary.empty,
 .draft-capital-summary.empty,
@@ -1452,6 +1456,221 @@ tbody tr:hover { background: rgba(100, 181, 255, 0.055); }
 .result-card ul { padding-left: 19px; }
 .result-card li { margin: 6px 0; color: var(--muted-2); }
 .result-card li small { display: block; margin-top: 2px; }
+
+.trade-targets-panel {
+  border-color: rgba(100, 181, 255, 0.16);
+  background:
+    radial-gradient(circle at 96% 0%, rgba(100, 181, 255, 0.10), transparent 20rem),
+    linear-gradient(180deg, rgba(17, 30, 47, 0.91), rgba(10, 20, 33, 0.91));
+}
+
+.trade-target-heading { align-items: end; }
+
+.trade-target-side-control {
+  display: grid;
+  grid-template-columns: auto minmax(170px, 230px);
+  align-items: center;
+  gap: 9px;
+  flex: 0 0 auto;
+}
+
+.trade-target-side-control select {
+  min-height: 38px;
+  padding: 7px 30px 7px 10px;
+  border-radius: 11px;
+  font-size: 0.78rem;
+}
+
+.trade-target-summary {
+  margin: -2px 0 14px;
+  color: var(--muted-2);
+  font-size: 0.82rem;
+}
+
+.trade-target-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.trade-target-card,
+.free-agent-card,
+.drop-candidate-card {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(4, 12, 21, 0.36);
+}
+
+.trade-target-card {
+  display: flex;
+  flex-direction: column;
+  padding: 13px;
+}
+
+.trade-target-card-topline,
+.free-agent-card-topline,
+.drop-candidate-topline {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.trade-target-card h4,
+.free-agent-card h4,
+.drop-candidate-card h4 {
+  margin: 9px 0 3px;
+  color: var(--text);
+  font-size: 0.94rem;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+}
+
+.trade-target-card > p,
+.free-agent-card p,
+.drop-candidate-card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.position-token {
+  display: inline-grid;
+  min-width: 36px;
+  min-height: 27px;
+  place-items: center;
+  padding: 4px 8px;
+  border: 1px solid rgba(100, 181, 255, 0.20);
+  border-radius: 9px;
+  background: var(--accent-soft);
+  color: #b7ddff;
+  font-size: 0.7rem;
+  font-weight: 840;
+}
+
+.target-score,
+.move-score {
+  display: grid;
+  justify-items: end;
+  line-height: 1;
+}
+
+.target-score strong { color: var(--good); font-size: 1.02rem; }
+.target-score span,
+.move-score span { margin-top: 4px; color: var(--muted); font-size: 0.58rem; font-weight: 760; text-transform: uppercase; letter-spacing: 0.06em; }
+
+.recommendation-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 11px;
+}
+
+.recommendation-badges .badge { font-size: 0.62rem; }
+.generate-offer-button,
+.analyze-pickup-button { width: 100%; margin-top: 13px; min-height: 40px; border-radius: 11px; font-size: 0.76rem; }
+.trade-target-card .generate-offer-button { margin-top: auto; padding-top: 9px; padding-bottom: 9px; }
+
+.generated-offer-status {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.025);
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.generated-offer-status.good { border-color: rgba(53, 208, 127, 0.24); background: var(--good-soft); color: #a3ebc3; }
+.generated-offer-status.warn { border-color: rgba(255, 184, 77, 0.24); background: var(--warn-soft); color: #ffd18b; }
+
+.free-agency-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+.free-agency-needs-summary {
+  display: grid;
+  gap: 4px;
+  margin-top: 15px;
+  padding: 13px 14px;
+  border: 1px solid rgba(100, 181, 255, 0.18);
+  border-radius: 14px;
+  background: rgba(100, 181, 255, 0.055);
+  color: var(--muted-2);
+  font-size: 0.82rem;
+}
+
+.free-agency-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.free-agent-list,
+.drop-recommendations { display: grid; gap: 10px; }
+
+.free-agent-card {
+  padding: 13px;
+  transition: border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
+}
+
+.free-agent-card.selected {
+  border-color: rgba(100, 181, 255, 0.48);
+  background: rgba(100, 181, 255, 0.075);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.free-agent-identity {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.free-agent-identity h4 { margin-top: 1px; }
+.compact-fit-score { min-width: 66px; padding: 8px; }
+.compact-fit-score strong { font-size: 1.12rem; }
+.card-context { margin-top: 9px !important; }
+
+.pickup-analysis-header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 11px;
+  align-items: start;
+  padding: 13px;
+  border: 1px solid rgba(53, 208, 127, 0.18);
+  border-radius: 15px;
+  background: var(--good-soft);
+}
+
+.pickup-analysis-header h3 { margin: 3px 0 4px; }
+.pickup-analysis-header p { margin: 0; font-size: 0.76rem; }
+
+.drop-candidate-card { padding: 13px; }
+.drop-candidate-card h4 { margin-top: 8px; }
+.move-score strong { font-size: 0.92rem; }
+.move-score.positive strong { color: var(--good); }
+.move-score.negative strong { color: var(--bad); }
+
+.drop-impact-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 11px;
+}
+
+.drop-impact-grid span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 8px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.drop-impact-grid small { font-size: 0.59rem; text-transform: uppercase; letter-spacing: 0.05em; }
+.drop-impact-grid strong { font-size: 0.72rem; overflow-wrap: anywhere; }
 
 .draft-controls { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 
@@ -1783,11 +2002,13 @@ tbody tr:hover { background: rgba(100, 181, 255, 0.055); }
   .tabs { grid-column: 1 / -1; grid-row: 2; justify-content: flex-start; order: 3; border-top: 1px solid var(--line); padding-top: 8px; }
   .league-switcher { justify-self: end; width: min(100%, 320px); }
   .hero { grid-template-columns: 1fr; }
+  .trade-target-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .draft-board-layout { gap: 12px; }
   .settings-layout { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 920px) {
+  .free-agency-layout { grid-template-columns: 1fr; }
   .draft-board-layout { grid-template-columns: 1fr; }
 }
 
@@ -1835,7 +2056,7 @@ tbody tr:hover { background: rgba(100, 181, 255, 0.055); }
     bottom: 0;
     z-index: 80;
     display: grid;
-    grid-template-columns: repeat(6, minmax(0, 1fr));
+    grid-template-columns: repeat(7, minmax(0, 1fr));
     grid-column: auto;
     grid-row: auto;
     width: 100%;
@@ -1893,7 +2114,12 @@ tbody tr:hover { background: rgba(100, 181, 255, 0.055); }
   .trade-summary .metric { min-height: 68px; }
   .trade-summary .metric span { font-size: 1.25rem; }
 
+  .trade-target-heading { display: grid !important; align-items: start !important; }
+  .trade-target-side-control { grid-template-columns: auto minmax(0, 1fr); width: 100%; }
+  .trade-target-grid { grid-template-columns: 1fr; }
+
   .draft-controls,
+  .free-agency-controls,
   .recap-controls,
   .player-controls,
   .player-toolbar-controls,
@@ -1902,6 +2128,7 @@ tbody tr:hover { background: rgba(100, 181, 255, 0.055); }
   .prospect-grid { grid-template-columns: 1fr; }
   .prospect-card { grid-template-columns: 30px minmax(0, 1fr); padding: 13px; }
   .prospect-card .fit-score { grid-column: 2; width: 100%; min-width: 0; flex-direction: row; align-items: baseline; justify-content: space-between; }
+  .drop-impact-grid { grid-template-columns: 1fr; }
   .draft-capital-heading,
   .pick-availability-heading { align-items: flex-start; }
   .draft-capital-heading { display: grid; gap: 4px; }
