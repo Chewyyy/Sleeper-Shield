@@ -2165,6 +2165,44 @@ tbody tr:hover { background: rgba(100, 181, 255, 0.055); }
   background: rgba(100, 181, 255, 0.09);
 }
 
+.my-team-setting {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(190px, 0.82fr);
+  gap: 14px;
+  align-items: end;
+  margin-top: 15px;
+  padding: 14px;
+  border: 1px solid rgba(90, 167, 255, 0.2);
+  border-radius: 16px;
+  background: linear-gradient(135deg, rgba(90, 167, 255, 0.09), rgba(53, 208, 127, 0.035));
+  transition: border-color 0.16s ease, background 0.16s ease;
+}
+
+.my-team-setting.configured {
+  border-color: rgba(53, 208, 127, 0.28);
+  background: linear-gradient(135deg, rgba(53, 208, 127, 0.1), rgba(90, 167, 255, 0.055));
+}
+
+.my-team-setting-copy {
+  min-width: 0;
+}
+
+.my-team-setting-copy strong {
+  display: block;
+  margin-top: 3px;
+  font-size: 0.98rem;
+}
+
+.my-team-setting-copy p {
+  margin: 5px 0 0;
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.my-team-select-label span {
+  color: var(--muted-2);
+}
+
 .settings-grid { gap: 10px; }
 
 .settings-grid label {
@@ -2354,6 +2392,8 @@ tbody tr:hover { background: rgba(100, 181, 255, 0.055); }
   .player-controls,
   .player-toolbar-controls,
   .settings-grid { grid-template-columns: 1fr; }
+
+  .my-team-setting { grid-template-columns: 1fr; align-items: stretch; }
 
   .prospect-grid { grid-template-columns: 1fr; }
   .prospect-card { grid-template-columns: 30px minmax(0, 1fr); padding: 13px; }

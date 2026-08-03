@@ -507,6 +507,18 @@
               <button id="addLeagueIdBtn" class="primary" type="button">Add league</button>
             </div>
             <p class="hint">Public Sleeper data only. Saved leagues load automatically on this device.</p>
+            <div id="myTeamSetting" class="my-team-setting">
+              <div class="my-team-setting-copy">
+                <span class="panel-kicker">Team defaults</span>
+                <strong>Set your team</strong>
+                <p id="myTeamHelp">Add and select a league, then choose your roster.</p>
+              </div>
+              <label class="my-team-select-label" for="myTeamSelect">My team
+                <select id="myTeamSelect" disabled>
+                  <option value="">No league loaded</option>
+                </select>
+              </label>
+            </div>
             <div id="loadedLeagues" class="league-list empty">No leagues loaded.</div>
             <div class="button-row settings-data-actions">
               <button id="exportDataBtn" class="secondary" type="button">Export data</button>
