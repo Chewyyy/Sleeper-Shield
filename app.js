@@ -76,6 +76,10 @@ const state = {
   players: {},
   projections: new Map(),
   projectionSeason: null,
+  weeklyProjections: new Map(),
+  weeklySchedule: new Map(),
+  weeklyProjectionMeta: null,
+  weeklyProjectionError: '',
   playerSearch: [],
   leagues: [],
   savedLeagueIds: loadSavedLeagueIds(),
@@ -392,6 +396,82 @@ async function loadProjections() {
     .filter(row => row?.player_id)
     .map(row => [String(row.player_id), row]));
   state.projectionSeason = season;
+}
+
+function upcomingLineupPeriod(nflState = state.nflState) {
+  const seasonType = String(nflState?.season_type || '').toLowerCase();
+  const season = Number(
+    nflState?.league_season ||
+    nflState?.league_create_season ||
+    nflState?.season ||
+    new Date().getFullYear()
+  );
+  const inRegularSeason = seasonType === 'regular';
+  const reportedWeek = safeNumber(
+    nflState?.display_week || nflState?.week || nflState?.leg,
+    1
+  );
+  const week = inRegularSeason ? clampNumber(reportedWeek, 1, 18) : 1;
+  return {
+    season,
+    week,
+    seasonType: seasonType || 'offseason',
+    inRegularSeason,
+    resetToWeekOne: !inRegularSeason,
+    label: `${season} Week ${week}`
+  };
+}
+
+function rebuildWeeklySchedule(rows = []) {
+  const schedule = new Map();
+  for (const row of rows || []) {
+    const team = String(row?.team || row?.player?.team || '').toUpperCase();
+    const opponent = String(row?.opponent || row?.opp || '').toUpperCase();
+    if (team && opponent) {
+      schedule.set(team, opponent);
+      if (!schedule.has(opponent)) schedule.set(opponent, team);
+    }
+  }
+  state.weeklySchedule = schedule;
+  return schedule;
+}
+
+async function loadWeeklyProjections({ force = false } = {}) {
+  const period = upcomingLineupPeriod();
+  const cacheKey = `projections.nfl.${period.season}.week.${period.week}.regular.v1`;
+  const cached = force ? null : await idbGet(cacheKey).catch(() => null);
+  const cacheWindow = period.inRegularSeason ? 60 * 60 * 1000 : 6 * 60 * 60 * 1000;
+  let rows = null;
+  let savedAt = Date.now();
+
+  if (cached?.rows && Date.now() - cached.savedAt < cacheWindow) {
+    rows = cached.rows;
+    savedAt = cached.savedAt;
+    logStatus(`Loaded ${period.label} weekly projections from local cache.`);
+  } else {
+    logStatus(`Fetching matchup-adjusted projections for ${period.label}.`);
+    rows = await fetchJson(
+      `${API_PROJECTIONS_BASE}/${period.season}/${period.week}?season_type=regular`,
+      `${period.label} projections`
+    );
+    savedAt = Date.now();
+    await idbSet(cacheKey, { savedAt, rows }).catch(() => null);
+    logStatus(`Fetched ${Array.isArray(rows) ? rows.length.toLocaleString() : 0} ${period.label} projection rows.`);
+  }
+
+  const usableRows = Array.isArray(rows) ? rows : [];
+  state.weeklyProjections = new Map(usableRows
+    .filter(row => row?.player_id)
+    .map(row => [String(row.player_id), row]));
+  rebuildWeeklySchedule(usableRows);
+  state.weeklyProjectionMeta = {
+    ...period,
+    rows: usableRows.length,
+    savedAt,
+    source: usableRows.length ? 'weekly' : 'season-fallback'
+  };
+  state.weeklyProjectionError = '';
+  return state.weeklyProjectionMeta;
 }
 
 function preparePlayerSearch() {
@@ -1559,6 +1639,242 @@ function optimalProjectedLineupScore(league, playerIds = []) {
   return { total: roundNum(total, 3), selected, bySlot };
 }
 
+function isLineupUnavailableStatus(status) {
+  const normalized = String(status || '').trim().toLowerCase();
+  if (!normalized) return false;
+  return normalized === 'out'
+    || normalized === 'inactive'
+    || normalized === 'suspended'
+    || normalized === 'pup'
+    || normalized === 'nfi'
+    || normalized === 'ir'
+    || normalized.startsWith('ir-')
+    || normalized.includes('injured reserve');
+}
+
+function matchupProjectionLabel({ source, opponent, unavailableReason, delta = 0, baselinePpg = 0 }) {
+  if (unavailableReason) return { label: unavailableReason, tone: 'bad' };
+  if (source !== 'weekly') return { label: 'Season baseline', tone: 'neutral' };
+  if (!opponent) return { label: 'Matchup pending', tone: 'neutral' };
+  const impact = delta / Math.max(5, baselinePpg);
+  if (delta >= 2.5 || impact >= 0.14) return { label: 'Strong matchup boost', tone: 'good' };
+  if (delta >= 0.8 || impact >= 0.06) return { label: 'Favorable matchup', tone: 'good' };
+  if (delta <= -2.5 || impact <= -0.14) return { label: 'Tough matchup', tone: 'bad' };
+  if (delta <= -0.8 || impact <= -0.06) return { label: 'Slight matchup fade', tone: 'warn' };
+  return { label: 'Neutral matchup', tone: 'neutral' };
+}
+
+function weeklyProjectionForPlayer(league, playerId, options = {}) {
+  const pid = String(playerId);
+  const player = getPlayer(pid) || {};
+  const period = upcomingLineupPeriod();
+  const meta = state.weeklyProjectionMeta;
+  const weeklyDataMatches = Boolean(
+    meta
+    && Number(meta.season) === Number(period.season)
+    && Number(meta.week) === Number(period.week)
+  );
+  const row = weeklyDataMatches ? state.weeklyProjections.get(pid) : null;
+  const team = String(row?.team || row?.player?.team || player.team || '').toUpperCase();
+  const opponent = String(row?.opponent || row?.opp || state.weeklySchedule.get(team) || '').toUpperCase();
+  const status = row?.status || row?.player?.injury_status || player.injury_status || player.status || '';
+  const forecast = forecastForPlayer(league, pid);
+  const baselinePpg = Math.max(0, safeNumber(forecast.ppg, 0));
+  const scheduleReady = weeklyDataMatches && safeNumber(meta?.rows, 0) > 100 && state.weeklySchedule.size >= 20;
+  const onBye = Boolean(scheduleReady && team && !state.weeklySchedule.has(team));
+
+  let unavailableReason = '';
+  if (options.isTaxi) unavailableReason = 'Taxi squad';
+  else if (options.isReserve) unavailableReason = 'IR/reserve';
+  else if (onBye) unavailableReason = 'Bye week';
+  else if (isLineupUnavailableStatus(status)) unavailableReason = String(status || 'Unavailable');
+  else if (player.active === false) unavailableReason = 'Inactive';
+  else if (!team && playerPrimaryPosition(pid) !== 'DEF') unavailableReason = 'No NFL team';
+
+  const weeklyPoints = row
+    ? fantasyPointsFromStats(row.stats || {}, league?.scoring_settings || {}, playerPrimaryPosition(pid))
+    : null;
+  const source = row ? 'weekly' : 'season-fallback';
+  const points = unavailableReason
+    ? 0
+    : row
+      ? safeNumber(weeklyPoints, 0)
+      : baselinePpg;
+  const delta = row && !unavailableReason ? points - baselinePpg : 0;
+  const matchup = matchupProjectionLabel({ source, opponent, unavailableReason, delta, baselinePpg });
+  const injuryConcern = /questionable|doubtful|limited/i.test(String(status));
+  const confidence = unavailableReason
+    ? 1
+    : row
+      ? (injuryConcern ? 0.72 : 0.9)
+      : clampNumber(safeNumber(forecast.confidence, 0.5) * 0.72, 0.25, 0.68);
+
+  return {
+    playerId: pid,
+    name: playerName(pid),
+    position: playerPrimaryPosition(pid),
+    team: team || 'FA',
+    opponent,
+    points: roundNum(points, 2),
+    baselinePpg: roundNum(baselinePpg, 2),
+    matchupDelta: roundNum(delta, 2),
+    matchupLabel: matchup.label,
+    matchupTone: matchup.tone,
+    source,
+    status: String(status || ''),
+    injuryConcern,
+    confidence: roundNum(confidence * 100, 0),
+    available: !unavailableReason,
+    unavailableReason,
+    onBye,
+    row
+  };
+}
+
+function optimizeLineupAssignments(league, candidates = []) {
+  const slots = (league?.roster_positions || [])
+    .map((slot, index) => ({ slot: String(slot).toUpperCase(), index }))
+    .filter(({ slot }) => !['BN', 'BE', 'IR', 'TAXI'].includes(slot));
+  const usable = (candidates || [])
+    .filter(candidate => candidate?.available)
+    .filter(candidate => slots.some(({ slot }) => slotEligibility(slot, candidate.playerId)));
+
+  if (!slots.length) return { total: 0, selected: [], bySlot: [], filled: 0 };
+
+  if (slots.length > 16) {
+    const orderedSlots = slots.slice().sort((a, b) => slotRestrictiveness(a.slot) - slotRestrictiveness(b.slot) || a.index - b.index);
+    const selected = new Set();
+    const assignments = new Map();
+    for (const slot of orderedSlots) {
+      const chosen = usable
+        .filter(candidate => !selected.has(candidate.playerId) && slotEligibility(slot.slot, candidate.playerId))
+        .sort((a, b) => b.points - a.points || b.confidence - a.confidence)[0];
+      if (chosen) {
+        selected.add(chosen.playerId);
+        assignments.set(slot.index, chosen);
+      }
+    }
+    const bySlot = slots.map(slot => ({ ...slot, detail: assignments.get(slot.index) || null }));
+    return {
+      total: roundNum(bySlot.reduce((sum, row) => sum + safeNumber(row.detail?.points), 0), 2),
+      selected: [...selected],
+      bySlot,
+      filled: selected.size
+    };
+  }
+
+  let states = new Map([[0, {
+    score: 0,
+    quality: 0,
+    assignments: Array(slots.length).fill(null)
+  }]]);
+
+  for (const candidate of usable) {
+    const snapshot = [...states.entries()];
+    for (const [mask, current] of snapshot) {
+      for (let slotIndex = 0; slotIndex < slots.length; slotIndex += 1) {
+        const bit = 1 << slotIndex;
+        if ((mask & bit) || !slotEligibility(slots[slotIndex].slot, candidate.playerId)) continue;
+        const nextMask = mask | bit;
+        const score = current.score + safeNumber(candidate.points, 0);
+        const slotSpecificity = Math.max(1, 12 - slotRestrictiveness(slots[slotIndex].slot));
+        const quality = current.quality
+          + safeNumber(candidate.points, 0) * slotSpecificity
+          + safeNumber(candidate.confidence, 0) * 0.01;
+        const existing = states.get(nextMask);
+        if (existing && (existing.score > score + 0.0001 || (Math.abs(existing.score - score) <= 0.0001 && existing.quality >= quality))) continue;
+        const assignments = current.assignments.slice();
+        assignments[slotIndex] = candidate;
+        states.set(nextMask, { score, quality, assignments });
+      }
+    }
+  }
+
+  let bestMask = 0;
+  let best = states.get(0);
+  for (const [mask, candidate] of states.entries()) {
+    const filled = candidate.assignments.filter(Boolean).length;
+    const bestFilled = best.assignments.filter(Boolean).length;
+    if (filled > bestFilled
+      || (filled === bestFilled && candidate.score > best.score + 0.0001)
+      || (filled === bestFilled && Math.abs(candidate.score - best.score) <= 0.0001 && candidate.quality > best.quality)) {
+      bestMask = mask;
+      best = candidate;
+    }
+  }
+
+  const bySlot = slots.map((slot, index) => ({ ...slot, detail: best.assignments[index] || null }));
+  const selected = best.assignments.filter(Boolean).map(detail => detail.playerId);
+  return {
+    total: roundNum(best.score, 2),
+    selected,
+    bySlot,
+    filled: best.assignments.filter(Boolean).length,
+    mask: bestMask
+  };
+}
+
+function recommendedLineupForRoster(league, rosterId) {
+  const roster = league?.rosterMap?.get(Number(rosterId));
+  const period = upcomingLineupPeriod();
+  if (!league || !roster) {
+    return {
+      period, total: 0, baselineTotal: 0, matchupDelta: 0,
+      starters: [], bench: [], unavailable: [], emptySlots: [],
+      startIds: [], sitIds: [], weeklyCoverage: 0, confidence: 'Unavailable'
+    };
+  }
+
+  const taxi = new Set((roster.taxi || []).map(String));
+  const reserve = new Set((roster.reserve || []).map(String));
+  const candidates = [...new Set((roster.players || []).map(String))]
+    .map(playerId => weeklyProjectionForPlayer(league, playerId, {
+      isTaxi: taxi.has(playerId),
+      isReserve: reserve.has(playerId)
+    }));
+  const optimized = optimizeLineupAssignments(league, candidates);
+  const starters = optimized.bySlot.map(row => ({
+    slot: row.slot,
+    slotIndex: row.index,
+    detail: row.detail
+  }));
+  const selected = new Set(optimized.selected);
+  const bench = candidates
+    .filter(detail => detail.available && !selected.has(detail.playerId))
+    .sort((a, b) => b.points - a.points || b.baselinePpg - a.baselinePpg);
+  const unavailable = candidates
+    .filter(detail => !detail.available)
+    .sort((a, b) => a.unavailableReason.localeCompare(b.unavailableReason) || a.name.localeCompare(b.name));
+  const filledStarters = starters.map(row => row.detail).filter(Boolean);
+  const baselineTotal = filledStarters.reduce((sum, detail) => sum + detail.baselinePpg, 0);
+  const weeklyCount = filledStarters.filter(detail => detail.source === 'weekly').length;
+  const weeklyCoverage = filledStarters.length ? weeklyCount / filledStarters.length : 0;
+  const currentStarters = period.inRegularSeason
+    ? new Set((roster.starters || []).map(String).filter(playerId => playerId && playerId !== '0'))
+    : new Set();
+  const startIds = period.inRegularSeason ? [...selected].filter(playerId => !currentStarters.has(playerId)) : [];
+  const sitIds = period.inRegularSeason ? [...currentStarters].filter(playerId => !selected.has(playerId)) : [];
+  const confidence = weeklyCoverage >= 0.85 ? 'High' : weeklyCoverage >= 0.55 ? 'Medium' : weeklyCoverage > 0 ? 'Limited' : 'Season fallback';
+
+  return {
+    period,
+    total: roundNum(optimized.total, 2),
+    baselineTotal: roundNum(baselineTotal, 2),
+    matchupDelta: roundNum(optimized.total - baselineTotal, 2),
+    starters,
+    bench,
+    unavailable,
+    emptySlots: starters.filter(row => !row.detail).map(row => row.slot),
+    startIds,
+    sitIds,
+    weeklyCoverage: roundNum(weeklyCoverage * 100, 0),
+    confidence,
+    weeklyCount,
+    filled: filledStarters.length,
+    slotCount: starters.length
+  };
+}
+
 function rosterDepthScore(league, playerIds = []) {
   const demand = starterDemandPerRoster(league);
   let total = 0;
@@ -2125,6 +2441,17 @@ function renderDropCandidateCard(row) {
 function fillFreeAgencyControls() {
   const league = getSelectedLeague();
   const select = $('freeAgencyTeamSelect');
+  if (!select) return;
+  const previous = select.value;
+  select.innerHTML = league
+    ? league.rosters.map(roster => `<option value="${roster.roster_id}">${escapeHtml(teamName(league, roster.roster_id))}</option>`).join('')
+    : '<option value="">No league loaded</option>';
+  if (previous && [...select.options].some(option => option.value === previous)) select.value = previous;
+}
+
+function fillLineupControls() {
+  const league = getSelectedLeague();
+  const select = $('lineupTeamSelect');
   if (!select) return;
   const previous = select.value;
   select.innerHTML = league
@@ -3127,6 +3454,144 @@ function renderPlayerComparison() {
   el.innerHTML = `<div class="player-card-grid">${cards}</div>${renderComparisonPanel(league, a?.id, b?.id)}`;
 }
 
+function lineupSlotDisplay(slot, slotIndex, starters = []) {
+  const normalized = String(slot || '').toUpperCase();
+  const names = {
+    SUPER_FLEX: 'SF', SUPERFLEX: 'SF', OP: 'SF',
+    REC_FLEX: 'REC FLEX', WRRB_FLEX: 'FLEX', WRT: 'FLEX', RB_WR_TE: 'FLEX', FLEX: 'FLEX',
+    IDP_FLEX: 'IDP', DL_LB_DB: 'IDP'
+  };
+  const base = names[normalized] || normalizePosition(normalized);
+  const matching = (starters || []).filter(row => String(row.slot).toUpperCase() === normalized);
+  if (matching.length <= 1) return base;
+  const ordinal = matching.findIndex(row => Number(row.slotIndex) === Number(slotIndex)) + 1;
+  return `${base} ${Math.max(1, ordinal)}`;
+}
+
+function renderLineupStarterRow(row, starters) {
+  const slotLabel = lineupSlotDisplay(row.slot, row.slotIndex, starters);
+  const detail = row.detail;
+  if (!detail) {
+    return `<article class="lineup-player-row lineup-empty-slot">
+      <span class="lineup-slot">${escapeHtml(slotLabel)}</span>
+      <div><h4>Open lineup slot</h4><p>No eligible active player found.</p></div>
+      <div class="lineup-projection"><strong>0</strong><span>proj pts</span></div>
+    </article>`;
+  }
+  const opponent = detail.opponent ? ` vs ${detail.opponent}` : '';
+  const sourceLabel = detail.source === 'weekly' ? 'Weekly projection' : 'Season baseline';
+  const injuryBadge = detail.injuryConcern ? `<span class="lineup-status-badge warn">${escapeHtml(detail.status)}</span>` : '';
+  return `<article class="lineup-player-row">
+    <span class="lineup-slot">${escapeHtml(slotLabel)}</span>
+    <div class="lineup-player-copy">
+      <h4>${escapeHtml(detail.name)} ${injuryBadge}</h4>
+      <p>${escapeHtml(detail.position)} · ${escapeHtml(detail.team)}${escapeHtml(opponent)} · ${escapeHtml(sourceLabel)}</p>
+      <span class="lineup-matchup ${escapeHtml(detail.matchupTone)}">${escapeHtml(detail.matchupLabel)}${detail.source === 'weekly' && detail.baselinePpg ? ` · ${escapeHtml(displaySignedNumber(detail.matchupDelta))}` : ''}</span>
+    </div>
+    <div class="lineup-projection"><strong>${displayNumber(detail.points)}</strong><span>proj pts</span></div>
+  </article>`;
+}
+
+function renderLineupBenchRow(detail) {
+  const opponent = detail.opponent ? ` vs ${detail.opponent}` : '';
+  return `<article class="lineup-bench-row">
+    <div>
+      <h4>${escapeHtml(detail.name)}</h4>
+      <p>${escapeHtml(detail.position)} · ${escapeHtml(detail.team)}${escapeHtml(opponent)}</p>
+    </div>
+    <span class="lineup-matchup ${escapeHtml(detail.matchupTone)}">${escapeHtml(detail.matchupLabel)}</span>
+    <strong>${displayNumber(detail.points)}</strong>
+  </article>`;
+}
+
+function renderLineupChanges(lineup) {
+  const output = $('lineupChanges');
+  if (!output) return;
+  if (!lineup.period.inRegularSeason) {
+    output.className = 'lineup-changes offseason';
+    output.innerHTML = `<strong>Week 1 planning mode</strong><span>Sleeper has not entered the regular season, so this is a fresh recommended lineup rather than a comparison with last season’s starters.</span>`;
+    return;
+  }
+  if (!lineup.startIds.length && !lineup.sitIds.length) {
+    output.className = 'lineup-changes matched';
+    output.innerHTML = '<strong>No changes recommended</strong><span>This lineup matches the team’s current Sleeper starters.</span>';
+    return;
+  }
+  output.className = 'lineup-changes';
+  output.innerHTML = `
+    <strong>${Math.max(lineup.startIds.length, lineup.sitIds.length)} recommended change${Math.max(lineup.startIds.length, lineup.sitIds.length) === 1 ? '' : 's'}</strong>
+    <div class="lineup-change-groups">
+      <span><small>Start</small>${lineup.startIds.map(playerId => `<b>${escapeHtml(playerName(playerId))}</b>`).join('') || '<b>—</b>'}</span>
+      <span><small>Sit</small>${lineup.sitIds.map(playerId => `<b>${escapeHtml(playerName(playerId))}</b>`).join('') || '<b>—</b>'}</span>
+    </div>`;
+}
+
+function renderRecommendedLineup() {
+  const startersOutput = $('recommendedLineup');
+  const benchOutput = $('lineupBench');
+  const unavailableOutput = $('lineupUnavailable');
+  const summary = $('lineupSummary');
+  const weekBadge = $('lineupWeekBadge');
+  const dataStatus = $('lineupDataStatus');
+  if (!startersOutput || !benchOutput || !summary) return;
+
+  const league = getSelectedLeague();
+  const rosterId = Number($('lineupTeamSelect')?.value);
+  const period = upcomingLineupPeriod();
+  if (weekBadge) weekBadge.textContent = period.resetToWeekOne ? `${period.label} · Week 1 default` : period.label;
+
+  if (!league || !rosterId) {
+    summary.className = 'lineup-summary empty';
+    summary.textContent = 'Load a league to build a recommended lineup.';
+    startersOutput.className = 'recommended-lineup empty';
+    startersOutput.textContent = 'Recommended starters will appear here.';
+    benchOutput.className = 'lineup-bench empty';
+    benchOutput.textContent = 'Bench alternatives will appear here.';
+    if (unavailableOutput) unavailableOutput.innerHTML = '';
+    if (dataStatus) dataStatus.textContent = 'Waiting for league';
+    renderLineupChanges({ period, startIds: [], sitIds: [] });
+    return;
+  }
+
+  const lineup = recommendedLineupForRoster(league, rosterId);
+  const meta = state.weeklyProjectionMeta;
+  const hasWeeklyRows = Boolean(meta?.rows && Number(meta.season) === Number(period.season) && Number(meta.week) === Number(period.week));
+  if (dataStatus) dataStatus.textContent = hasWeeklyRows
+    ? `${displayNumber(meta.rows, 0)} weekly projections`
+    : 'Season projection fallback';
+
+  summary.className = 'lineup-summary';
+  summary.innerHTML = `
+    <div class="lineup-summary-copy">
+      <span class="panel-kicker">${escapeHtml(teamName(league, rosterId))}</span>
+      <h3>${escapeHtml(period.label)} recommendation</h3>
+      <p>${hasWeeklyRows
+        ? 'Optimized from matchup-specific player stat projections using this league’s exact scoring and legal roster slots.'
+        : 'Weekly projections are not available yet, so this lineup uses each player’s season forecast and will update automatically when weekly data arrives.'}</p>
+    </div>
+    <div class="lineup-summary-metrics">
+      <span><small>Projected total</small><strong>${displayNumber(lineup.total)}</strong></span>
+      <span><small>Vs season baseline</small><strong class="${lineup.matchupDelta > 0 ? 'positive' : lineup.matchupDelta < 0 ? 'negative' : ''}">${displaySignedNumber(lineup.matchupDelta)}</strong></span>
+      <span><small>Weekly coverage</small><strong>${displayNumber(lineup.weeklyCoverage, 0)}%</strong></span>
+      <span><small>Confidence</small><strong>${escapeHtml(lineup.confidence)}</strong></span>
+    </div>`;
+
+  startersOutput.className = 'recommended-lineup';
+  startersOutput.innerHTML = lineup.starters.map(row => renderLineupStarterRow(row, lineup.starters)).join('');
+  benchOutput.className = lineup.bench.length ? 'lineup-bench' : 'lineup-bench empty';
+  benchOutput.innerHTML = lineup.bench.length
+    ? lineup.bench.slice(0, 7).map(renderLineupBenchRow).join('')
+    : 'No additional active bench options have usable projections.';
+
+  if (unavailableOutput) {
+    unavailableOutput.innerHTML = lineup.unavailable.length
+      ? `<div class="lineup-unavailable-heading"><strong>Unavailable this week</strong><span>${lineup.unavailable.length}</span></div>
+        <div class="lineup-unavailable-list">${lineup.unavailable.map(detail => `<span><b>${escapeHtml(detail.name)}</b><small>${escapeHtml(detail.unavailableReason)}</small></span>`).join('')}</div>`
+      : '';
+  }
+  renderLineupChanges(lineup);
+}
+
 function renderTables() {
   renderStandings();
   renderStrength();
@@ -3279,6 +3744,7 @@ function fillLeagueSelects() {
     : '<option value="">No league loaded</option>';
   if (previous && state.leagues.some(l => String(l.league_id) === String(previous))) el.value = previous;
   fillTeamSelects();
+  fillLineupControls();
   fillFreeAgencyControls();
   fillRecapWeeks();
   fillPlayerSeasonSelect();
@@ -4108,9 +4574,11 @@ function activateTab(tabId) {
   document.querySelectorAll('.tab').forEach(tab => {
     const active = tab.dataset.tab === tabId;
     tab.classList.toggle('active', active);
-    tab.setAttribute('aria-current', active ? 'page' : 'false');
+    if (active) tab.setAttribute('aria-current', 'page');
+    else tab.removeAttribute('aria-current');
   });
   document.querySelectorAll('.tab-panel').forEach(panel => panel.classList.toggle('active', panel.id === tabId));
+  if (tabId === 'lineup') renderRecommendedLineup();
   if (tabId === 'free-agency') renderFreeAgencyAnalyzer();
   if (tabId === 'draft') renderDraftRecommendations();
   if (tabId === 'recaps') scheduleRecapGeneration(0);
@@ -4786,6 +5254,22 @@ async function loadAll(idsOverride = null) {
         console.warn(err);
       }
     }
+    const lineupPeriod = upcomingLineupPeriod();
+    const needsWeeklyProjectionRefresh = !state.weeklyProjectionMeta
+      || Number(state.weeklyProjectionMeta.season) !== Number(lineupPeriod.season)
+      || Number(state.weeklyProjectionMeta.week) !== Number(lineupPeriod.week);
+    if (needsWeeklyProjectionRefresh) {
+      try {
+        await loadWeeklyProjections();
+      } catch (err) {
+        state.weeklyProjections = new Map();
+        state.weeklySchedule = new Map();
+        state.weeklyProjectionMeta = { ...lineupPeriod, rows: 0, source: 'season-fallback', savedAt: Date.now() };
+        state.weeklyProjectionError = err.message;
+        logStatus(`Weekly lineup projection warning: ${err.message}. Using season forecast fallback.`);
+        console.warn(err);
+      }
+    }
 
     const existing = new Map(state.leagues.map(league => [String(league.league_id), league]));
     const loaded = [];
@@ -4819,6 +5303,7 @@ function renderEverything() {
   fillLeagueSelects();
   renderMetrics();
   renderTables();
+  renderRecommendedLineup();
   renderAssetList('A');
   renderAssetList('B');
   renderTradeTargetSuggestions();
@@ -4837,6 +5322,7 @@ function applyModelSettingsFromUI() {
     buildTeamStrength(league);
   }
   renderTables();
+  renderRecommendedLineup();
   renderAssetList('A');
   renderAssetList('B');
   renderTradeTargetSuggestions();
@@ -4956,6 +5442,8 @@ function wireEvents() {
     renderTradeTargetSuggestions();
   });
 
+  $('lineupTeamSelect')?.addEventListener('change', renderRecommendedLineup);
+
   ['freeAgencyTeamSelect', 'freeAgencyPositionFilter'].forEach(id => {
     $(id)?.addEventListener('change', () => {
       state.freeAgency.selectedPlayerId = '';
@@ -5073,6 +5561,11 @@ if (typeof module !== 'undefined' && module.exports) {
     starterDemandPerRoster,
     buildProjectionModel,
     forecastForPlayer,
+    upcomingLineupPeriod,
+    rebuildWeeklySchedule,
+    weeklyProjectionForPlayer,
+    optimizeLineupAssignments,
+    recommendedLineupForRoster,
     projectionIntrinsicValue,
     playerValue,
     optimalProjectedLineupScore,
