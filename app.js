@@ -110,7 +110,7 @@ const RECAP_STYLES = Object.freeze({
 const RECAP_RANGE_PROMPTS = Object.freeze({
   week: 'Using the league data above, write an entertaining but useful fantasy football recap. Cover the winners and losers, biggest overperformers, awful bench decisions, important trades or waiver moves, team trends, and what managers should watch next.',
   offseason: 'Using the offseason data above, write a fantasy football offseason recap. Cover the draft story, draft winners and losers, trades or pick movement, notable free-agent or waiver activity when present, team roster needs, and what managers should watch entering the season.',
-  draft: 'Using only the draft and draft-trade data above, write a focused fantasy football draft recap. Identify the best draft classes, risky reaches, value picks, positional runs, draft-day trades, and which teams changed their outlook the most.'
+  draft: 'Using only the draft and draft-trade data above, write a focused fantasy football draft recap. Identify the best draft classes, risky reaches, the best selections relative to draft slot, positional runs, draft-day trades, and which teams changed their outlook the most.'
 });
 
 
@@ -185,7 +185,8 @@ function recapPromptForRange(range, styleKey = DEFAULT_RECAP_STYLE) {
   return [
     RECAP_RANGE_PROMPTS[normalizedRange],
     `Tone and presentation: ${style.instruction}`,
-    'Accuracy rules: Use only facts supported by the supplied data. Do not invent injuries, motives, private trade talks, manager quotes, or transactions. If data is missing or incomplete, say so plainly.'
+    'Accuracy rules: Use only facts supported by the supplied data. Do not invent injuries, motives, private trade talks, manager quotes, or transactions. If data is missing or incomplete, say so plainly.',
+    'Player comparisons: Do not introduce model asset-score or trade-value numbers. Use the supplied projected position ranks and league-scored projected points per game when discussing future player or roster outlook.'
   ].join('\n\n');
 }
 
@@ -5673,6 +5674,95 @@ function appendLeagueSettings(lines, league) {
   lines.push(`- Waiver/FAAB settings JSON: ${displayJson({waiver_type: league.settings?.waiver_type, waiver_budget: league.settings?.waiver_budget, waiver_clear_days: league.settings?.waiver_clear_days})}`);
   lines.push(`- Scoring settings JSON: ${displayJson(league.scoring_settings || {})}`);
   lines.push('');
+  const projectionSeason = league.projectionModel?.season || state.projectionSeason || league.season;
+  lines.push('## How player outlook is shown');
+  lines.push(`- Projected position rank (for example, WR12) and projected PPG are calculated from Sleeper's ${projectionSeason} projection stat lines using this league's exact scoring settings.`);
+  lines.push('- Model asset-score numbers are intentionally excluded. “Projection unavailable” means Sleeper did not provide a usable projection row for that player.');
+  lines.push('');
+}
+
+function recapProjectionForPlayer(league, playerId) {
+  const id = String(playerId || '');
+  const position = playerPrimaryPosition(id);
+  const projection = league?.projectionModel?.players?.get(id) || null;
+  const rank = safeNumber(projection?.positionRank, 0) || null;
+  const pool = safeNumber(projection?.positionPool, 0) || null;
+  const ppgValue = Number(projection?.ppg);
+  const ppg = projection && Number.isFinite(ppgValue) ? ppgValue : null;
+  const percentileValue = Number(projection?.percentile);
+  const quality = projection && Number.isFinite(percentileValue)
+    ? percentileValue
+    : projection && rank && pool > 1
+      ? 1 - (rank - 1) / (pool - 1)
+      : projection ? 0.5 : -1;
+  return {
+    playerId: id,
+    name: playerName(id),
+    position,
+    rank,
+    pool,
+    ppg,
+    quality,
+    projection
+  };
+}
+
+function recapPlayerOutlook(league, playerId, { includeName = true } = {}) {
+  const detail = recapProjectionForPlayer(league, playerId);
+  const rankLabel = detail.rank ? `${detail.position}${detail.rank}` : `${detail.position} rank unavailable`;
+  const ppgLabel = detail.ppg === null ? 'projected PPG unavailable' : `${displayNumber(detail.ppg)} projected PPG`;
+  const outlook = `${rankLabel}, ${ppgLabel}`;
+  return includeName ? `${detail.name} (${outlook})` : outlook;
+}
+
+function recapProjectedPlayers(league, playerIds = [], limit = 4) {
+  return [...new Set((playerIds || []).map(String).filter(Boolean))]
+    .map(playerId => recapProjectionForPlayer(league, playerId))
+    .sort((a, b) => Number(Boolean(b.projection)) - Number(Boolean(a.projection))
+      || b.quality - a.quality
+      || safeNumber(b.ppg, -1) - safeNumber(a.ppg, -1)
+      || a.name.localeCompare(b.name))
+    .slice(0, Math.max(0, limit));
+}
+
+function recapPlayerList(league, playerIds = [], limit = 4) {
+  return recapProjectedPlayers(league, playerIds, limit)
+    .map(detail => recapPlayerOutlook(league, detail.playerId))
+    .join('; ');
+}
+
+function transactionPlayerIds(tx) {
+  return [...new Set([
+    ...Object.keys(tx?.adds || {}),
+    ...Object.keys(tx?.drops || {})
+  ].map(String).filter(Boolean))];
+}
+
+function transactionRecapWeight(league, tx) {
+  const projected = recapProjectedPlayers(league, transactionPlayerIds(tx), 5)
+    .filter(detail => detail.projection);
+  const playerWeight = projected.reduce((sum, detail, index) => sum + Math.max(0, detail.quality) / (index + 1), 0);
+  return playerWeight + (tx?.draft_picks || []).length * 0.9 + transactionPlayerIds(tx).length * 0.03;
+}
+
+function transactionProjectionContext(league, tx) {
+  const addedIds = Object.keys(tx?.adds || {});
+  const droppedIds = Object.keys(tx?.drops || {});
+  const pickCount = (tx?.draft_picks || []).length;
+  const pieces = [];
+
+  if (isTradeTransaction(tx)) {
+    const involved = recapPlayerList(league, transactionPlayerIds(tx), 5);
+    if (involved) pieces.push(`Projected player outlooks: ${involved}.`);
+    if (pickCount) pieces.push(`Draft picks involved: ${pickCount}.`);
+    return pieces.join(' ') || 'No projected player or draft-pick context was available.';
+  }
+
+  const added = recapPlayerList(league, addedIds, 4);
+  const dropped = recapPlayerList(league, droppedIds, 4);
+  if (added) pieces.push(`Added outlook: ${added}.`);
+  if (dropped) pieces.push(`Dropped outlook: ${dropped}.`);
+  return pieces.join(' ') || 'No projected player outlook was available.';
 }
 
 function appendStandingsSnapshot(lines, league) {
@@ -5767,19 +5857,31 @@ function draftRecapLines(league) {
   if (classes.length) {
     lines.push('### Draft class summary by team');
     classes.slice(0, Math.min(league.total_rosters || 12, classes.length)).forEach((row, idx) => {
-      const top = row.picks.slice(0, 4).map(p => `${playerName(p.player_id)} (${roundPickText(p)})`).join(', ');
-      lines.push(`${idx + 1}. ${teamName(league, row.rosterId)} — ${row.picks.length} picks, estimated drafted player value ${roundNum(row.value)}. Top picks: ${top || 'none'}.`);
+      const top = row.picks.slice()
+        .sort((a, b) => {
+          const aOutlook = recapProjectionForPlayer(league, a.player_id);
+          const bOutlook = recapProjectionForPlayer(league, b.player_id);
+          return Number(Boolean(bOutlook.projection)) - Number(Boolean(aOutlook.projection))
+            || bOutlook.quality - aOutlook.quality
+            || safeNumber(a.pick_no, 999) - safeNumber(b.pick_no, 999);
+        })
+        .slice(0, 4)
+        .map(p => `${playerName(p.player_id)} (${roundPickText(p)}; ${recapPlayerOutlook(league, p.player_id, { includeName: false })})`)
+        .join(', ');
+      lines.push(`${idx + 1}. ${teamName(league, row.rosterId)} — ${row.picks.length} picks. Best projected outlooks: ${top || 'none'}.`);
     });
     lines.push('');
   }
 
-  const topValues = completedPicks
-    .map(pick => ({ pick, value: playerValue(league, pick.player_id).value }))
-    .sort((a, b) => b.value - a.value)
+  const topProjected = completedPicks
+    .map(pick => ({ pick, outlook: recapProjectionForPlayer(league, pick.player_id) }))
+    .filter(row => row.outlook.projection)
+    .sort((a, b) => b.outlook.quality - a.outlook.quality || safeNumber(b.outlook.ppg) - safeNumber(a.outlook.ppg))
     .slice(0, 12);
-  lines.push('### Highest current model values from the draft');
-  topValues.forEach((row, idx) => {
-    lines.push(`${idx + 1}. ${playerName(row.pick.player_id)} (${playerPrimaryPosition(row.pick.player_id)}) — ${formatDraftPickLabel(league, row.pick)}, model value ${roundNum(row.value)}.`);
+  lines.push('### Strongest projected players from the draft');
+  if (!topProjected.length) lines.push('- Sleeper has not published usable projections for the drafted players yet.');
+  topProjected.forEach((row, idx) => {
+    lines.push(`${idx + 1}. ${playerName(row.pick.player_id)} — ${formatDraftPickLabel(league, row.pick)}; ${recapPlayerOutlook(league, row.pick.player_id, { includeName: false })}.`);
   });
 
   const positionCounts = groupCounts(completedPicks.map(p => playerPrimaryPosition(p.player_id)));
@@ -5801,7 +5903,7 @@ function draftTradeLines(league) {
     lines.push('### Loaded draft-related trades');
     txRows.slice(0, 20).forEach(row => {
       const when = formatMaybeDate(row.tx.created);
-      lines.push(`- ${when ? `${when}; ` : ''}Week ${row.week}: ${row.summary} Approx pick/player value involved: ${roundNum(transactionImpact(league, row.tx))}.`);
+      lines.push(`- ${when ? `${when}; ` : ''}Week ${row.week}: ${row.summary}. ${transactionProjectionContext(league, row.tx)}`);
     });
   } else {
     lines.push('### Loaded draft-related trades');
@@ -5826,9 +5928,9 @@ function draftTradeLines(league) {
 
 function offseasonTransactionLines(league) {
   const rows = allLoadedTransactions(league)
-    .map(({ week, tx }) => ({ week, tx, summary: transactionSummary(league, tx), impact: transactionImpact(league, tx) }))
+    .map(({ week, tx }) => ({ week, tx, summary: transactionSummary(league, tx), weight: transactionRecapWeight(league, tx) }))
     .filter(row => row.summary)
-    .sort((a, b) => Math.abs(b.impact) - Math.abs(a.impact));
+    .sort((a, b) => b.weight - a.weight || safeNumber(b.tx.created) - safeNumber(a.tx.created));
   if (!rows.length) return ['- No transaction rows are loaded for offseason analysis.'];
 
   const trades = rows.filter(r => isTradeTransaction(r.tx)).slice(0, 8);
@@ -5836,24 +5938,32 @@ function offseasonTransactionLines(league) {
   const lines = [];
   if (trades.length) {
     lines.push('### Biggest loaded trades');
-    trades.forEach(r => lines.push(`- Week ${r.week}: ${r.summary} Approx value swing: ${roundNum(r.impact)}.`));
+    trades.forEach(r => lines.push(`- Week ${r.week}: ${r.summary}. ${transactionProjectionContext(league, r.tx)}`));
   } else {
     lines.push('### Biggest loaded trades');
     lines.push('- No trade transactions loaded outside the draft-pick movement above.');
   }
   lines.push('');
   lines.push('### Notable adds / drops');
-  if (adds.length) adds.forEach(r => lines.push(`- Week ${r.week}: ${r.summary} Approx value swing: ${roundNum(r.impact)}.`));
+  if (adds.length) adds.forEach(r => lines.push(`- Week ${r.week}: ${r.summary}. ${transactionProjectionContext(league, r.tx)}`));
   else lines.push('- No notable add/drop rows loaded.');
   return lines;
 }
 
 function rosterLandscapeLines(league) {
   const lines = [];
-  const rows = [...(league.teamStrength || new Map()).entries()].sort((a, b) => b[1].score - a[1].score);
+  const rows = [...(league.teamStrength || new Map()).entries()]
+    .sort((a, b) => safeNumber(b[1].projectedLineupPpg) - safeNumber(a[1].projectedLineupPpg)
+      || safeNumber(b[1].maxpf) - safeNumber(a[1].maxpf));
   if (!rows.length) return ['- Roster strength data is unavailable.'];
-  lines.push('### Current roster strength');
-  rows.slice(0, 5).forEach(([rid, s], idx) => lines.push(`${idx + 1}. ${teamName(league, rid)} — total value ${roundNum(s.rosterValue)}, starter value ${roundNum(s.startersValue)}, potential PF ${roundNum(s.maxpf)}.`));
+  lines.push('### Current projected lineup strength');
+  rows.slice(0, 5).forEach(([rid, s], idx) => {
+    const roster = league.rosterMap?.get(Number(rid)) || (league.rosters || []).find(row => Number(row.roster_id) === Number(rid));
+    const leaders = recapPlayerList(league, roster?.players || [], 3);
+    const potentialPf = safeNumber(s.maxpf) > 0 ? `, potential PF ${displayNumber(s.maxpf)}` : '';
+    const leaderText = leaders ? ` Top projected players: ${leaders}.` : ' Projected player details are unavailable.';
+    lines.push(`${idx + 1}. ${teamName(league, rid)} — ${displayNumber(s.projectedLineupPpg)} projected starter PPG${potentialPf}.${leaderText}`);
+  });
   lines.push('');
   lines.push('### Team needs entering the season');
   rows.forEach(([rid]) => lines.push(`- ${teamName(league, rid)}: ${rosterNeedsSummary(league, rid)}`));
@@ -5892,15 +6002,21 @@ function draftClasses(league, picks) {
   picks.forEach(pick => {
     const rid = draftPickRosterId(league, pick);
     if (!rid) return;
-    if (!map.has(rid)) map.set(rid, { rosterId: rid, value: 0, picks: [] });
+    if (!map.has(rid)) map.set(rid, { rosterId: rid, projectionScore: 0, projectedCount: 0, picks: [] });
     const row = map.get(rid);
     row.picks.push(pick);
-    row.value += playerValue(league, pick.player_id).value;
+    const outlook = recapProjectionForPlayer(league, pick.player_id);
+    if (outlook.projection) {
+      row.projectionScore += Math.max(0, outlook.quality);
+      row.projectedCount += 1;
+    }
   });
   return [...map.values()].map(row => {
     row.picks.sort((a, b) => safeNumber(a.pick_no) - safeNumber(b.pick_no));
     return row;
-  }).sort((a, b) => b.value - a.value || b.picks.length - a.picks.length);
+  }).sort((a, b) => b.projectionScore - a.projectionScore
+    || b.projectedCount - a.projectedCount
+    || b.picks.length - a.picks.length);
 }
 
 function draftPickRosterId(league, pick) {
@@ -5995,27 +6111,22 @@ function rangeHighlights(league, weeks) {
   lines.push(`- Biggest individual scores: ${players.map(p => `${playerName(p.pid)} ${roundNum(p.points)} Week ${p.week} for ${teamName(league, p.rosterId)}${p.started ? '' : ' [bench]'}`).join('; ')}.`);
 
   const txs = weeks.flatMap(week => (league.transactionsByWeek[week] || []).map(tx => ({ week, tx })));
-  const notable = txs.map(({ week, tx }) => ({ week, summary: transactionSummary(league, tx), impact: transactionImpact(league, tx) }))
+  const notable = txs.map(({ week, tx }) => ({
+    week,
+    tx,
+    summary: transactionSummary(league, tx),
+    weight: transactionRecapWeight(league, tx)
+  }))
     .filter(x => x.summary)
-    .sort((a, b) => Math.abs(b.impact) - Math.abs(a.impact))
+    .sort((a, b) => b.weight - a.weight || safeNumber(b.tx.created) - safeNumber(a.tx.created))
     .slice(0, 8);
   if (notable.length) {
-    lines.push('- Notable transaction swings:');
-    notable.forEach(x => lines.push(`  - Week ${x.week}: ${x.summary} Approx value swing: ${roundNum(x.impact)}.`));
+    lines.push('- Notable transactions:');
+    notable.forEach(x => lines.push(`  - Week ${x.week}: ${x.summary}. ${transactionProjectionContext(league, x.tx)}`));
   } else {
     lines.push('- No notable transactions loaded in this range.');
   }
   return lines;
-}
-
-function transactionImpact(league, tx) {
-  const adds = tx.adds || {};
-  const drops = tx.drops || {};
-  let impact = 0;
-  Object.keys(adds).forEach(pid => impact += playerValue(league, pid).value);
-  Object.keys(drops).forEach(pid => impact -= playerValue(league, pid).value);
-  for (const pick of (tx.draft_picks || [])) impact += pickValue(league, pick).value;
-  return impact;
 }
 
 function topPlayersForMatchup(matchup, count) {
@@ -6534,6 +6645,14 @@ if (typeof module !== 'undefined' && module.exports) {
     RECAP_STYLES,
     normalizeRecapStyle,
     recapPromptForRange,
+    recapProjectionForPlayer,
+    recapPlayerOutlook,
+    transactionProjectionContext,
+    draftRecapLines,
+    draftTradeLines,
+    offseasonTransactionLines,
+    rosterLandscapeLines,
+    rangeHighlights,
     savedMyTeamRosterId,
     defaultTeamRosterId,
     teamSelectDefaultValue,

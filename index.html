@@ -407,7 +407,7 @@
           <div>
             <span class="eyebrow">League recaps</span>
             <h2>Turn league activity into a clean brief.</h2>
-            <p>Change the week or range and the recap regenerates automatically.</p>
+            <p>Change the week or range and the recap regenerates automatically using projected position ranks and league-scored projected PPG instead of model asset scores.</p>
           </div>
         </div>
 
@@ -439,7 +439,7 @@
               <button id="sendRecapToChatGPTBtn" class="secondary" type="button">Copy &amp; send to ChatGPT</button>
             </div>
           </div>
-          <p id="recapStyleHint" class="hint recap-share-hint">The Pat McAfee Show option uses high-energy football-talk humor without impersonating a host or copying signature catchphrases. On mobile, choose ChatGPT in the share sheet; the complete prompt is copied as a fallback.</p>
+          <p id="recapStyleHint" class="hint recap-share-hint">Player outlooks use Sleeper projection stat lines scored under the selected league's settings; unavailable projections are labeled instead of replaced with asset-score numbers. The Pat McAfee Show option uses high-energy football-talk humor without impersonating a host or copying signature catchphrases. On mobile, choose ChatGPT in the share sheet; the complete prompt is copied as a fallback.</p>
           <textarea id="recapOutput" class="output" rows="22" aria-label="Generated recap" placeholder="Your recap will appear here automatically."></textarea>
         </section>
       </section>
@@ -695,7 +695,7 @@
           </div>
           <div class="guide-columns">
             <div><h4>Home</h4><p>Use standings, modeled roster strength, and league-rule summaries as a quick context check. Roster strength is an outlook, not a duplicate of win-loss record, so it can identify contenders whose record has lagged their underlying team.</p></div>
-            <div><h4>Recaps</h4><p>Select a week, recent four-week window, season-to-date range, offseason movement, or draft recap. Choose an analyst, commissioner, broadcast, front-office, or Pat McAfee Show-inspired sports-talk treatment. Copy the package for league chat, or use Copy &amp; send to ChatGPT to share the complete prompt.</p></div>
+            <div><h4>Recaps</h4><p>Select a week, recent four-week window, season-to-date range, offseason movement, or draft recap. Player outlooks use projected position rank and projected PPG from Sleeper projection stat lines scored under the active league's settings, without model asset-score numbers. Choose an analyst, commissioner, broadcast, front-office, or Pat McAfee Show-inspired sports-talk treatment. Copy the package for league chat, or use Copy &amp; send to ChatGPT to share the complete prompt.</p></div>
           </div>
           <p>For the best recap, wait until Sleeper has finalized scoring and transactions for the selected range. Treat narrative labels as summaries of the loaded data, and review names and numbers before posting.</p>
           <button class="secondary inline-action" type="button" data-open-tab="recaps">Open Recaps</button>

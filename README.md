@@ -39,6 +39,7 @@ Then open `http://localhost:5173`.
 - The primary navigation is a persistent bottom football dock on desktop and mobile, with a dedicated icon for every section and iPhone safe-area padding.
 - The Guides tab provides a full usage manual, field definitions, strategy guidance, decision workflows, and limitations for every feature.
 - Recap packages support Clean Analyst, Commissioner Roast, Broadcast Booth, Front Office GM, and Pat McAfee Show-inspired high-energy sports-talk treatments while keeping every claim grounded in loaded Sleeper data.
+- Recap player and roster outlooks omit model asset-score numbers. They instead show projected positional rank and projected PPG calculated from Sleeper projection stat lines under the active league's scoring, with missing projections labeled explicitly.
 - Copy & send to ChatGPT copies the entire assembled recap package and uses the device share sheet when available; if a direct handoff is unavailable, it opens ChatGPT with the prompt left safely on the clipboard.
 - Displayed numeric outputs are capped at two decimal places.
 - The generated Sleeper Shield identity is included as install icons, an Apple touch icon, browser favicons, and the in-app brand mark.
