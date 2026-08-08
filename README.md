@@ -35,6 +35,9 @@ Then open `http://localhost:5173`.
 - The rookie fit board ranks the best overall roster fits on the left and likely options at each owned pick on the right.
 - Draft availability uses exact Sleeper draft order when published, projects unset slots from roster strength, follows traded-pick ownership, and runs repeated team-need-aware mock drafts.
 - League management lives in Settings; the active league selector is available globally.
+- Settings saves a separate “My Team” roster for every league on the device. Switching leagues defaults Recommended Lineup, Trade Side A, Free Agency, and Draft to that roster while preserving temporary alternate-team inspection.
+- The primary navigation is a persistent bottom football dock on desktop and mobile, with a dedicated icon for every section and iPhone safe-area padding.
+- The Guides tab provides a full usage manual, field definitions, strategy guidance, decision workflows, and limitations for every feature.
 - Displayed numeric outputs are capped at two decimal places.
 - The generated Sleeper Shield identity is included as install icons, an Apple touch icon, browser favicons, and the in-app brand mark.
 

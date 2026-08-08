@@ -9,6 +9,7 @@ const API_OWNERSHIP_BASE = 'https://api.sleeper.com/players/nfl/research';
 const STORAGE_KEYS = {
   leagues: 'sts.leagueIds',
   selectedLeague: 'sts.selectedLeagueId',
+  myTeamByLeague: 'sts.myTeamByLeague',
   settings: 'sts.settings'
 };
 
@@ -90,6 +91,7 @@ const state = {
   playerSearch: [],
   leagues: [],
   savedLeagueIds: loadSavedLeagueIds(),
+  myTeamByLeague: loadMyTeamByLeague(),
   selectedAssets: { A: [], B: [] },
   freeAgency: { selectedPlayerId: '' },
   settings: loadSettings()
@@ -126,6 +128,37 @@ function saveLeagueIds(ids) {
   localStorage.setItem(STORAGE_KEYS.leagues, state.savedLeagueIds.join('\n'));
 }
 
+function loadMyTeamByLeague() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEYS.myTeamByLeague) || '{}');
+    if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return {};
+    return Object.fromEntries(Object.entries(saved)
+      .map(([leagueId, rosterId]) => [String(leagueId), String(rosterId)])
+      .filter(([leagueId, rosterId]) => /^\d{10,}$/.test(leagueId) && /^\d+$/.test(rosterId)));
+  } catch {
+    return {};
+  }
+}
+
+function saveMyTeamForLeague(leagueId, rosterId) {
+  const leagueKey = String(leagueId || '').trim();
+  const rosterKey = String(rosterId || '').trim();
+  if (!leagueKey) return;
+  if (rosterKey) state.myTeamByLeague[leagueKey] = rosterKey;
+  else delete state.myTeamByLeague[leagueKey];
+  localStorage.setItem(STORAGE_KEYS.myTeamByLeague, JSON.stringify(state.myTeamByLeague));
+}
+
+function savedMyTeamRosterId(league, selections = state.myTeamByLeague) {
+  if (!league) return 0;
+  const rosterId = Number(selections?.[String(league.league_id)]);
+  return (league.rosters || []).some(roster => Number(roster.roster_id) === rosterId) ? rosterId : 0;
+}
+
+function defaultTeamRosterId(league, selections = state.myTeamByLeague) {
+  return savedMyTeamRosterId(league, selections) || Number(league?.rosters?.[0]?.roster_id || 0);
+}
+
 async function addSavedLeagueId() {
   const input = $('leagueIdInput');
   const addedIds = parseLeagueIds(input.value);
@@ -134,10 +167,17 @@ async function addSavedLeagueId() {
     return;
   }
   const ids = [...new Set([...state.savedLeagueIds, ...addedIds])];
+  const addedLeagueId = addedIds.find(id => !state.savedLeagueIds.includes(id)) || addedIds[0];
   saveLeagueIds(ids);
+  localStorage.setItem(STORAGE_KEYS.selectedLeague, addedLeagueId);
   input.value = '';
   logStatus(`Added ${addedIds.length} league${addedIds.length === 1 ? '' : 's'}; ${ids.length} saved on this device.`);
   await loadAll(ids);
+  const addedLeague = state.leagues.find(league => String(league.league_id) === String(addedLeagueId));
+  if (addedLeague && !savedMyTeamRosterId(addedLeague)) {
+    $('myTeamSelect')?.focus({ preventScroll: true });
+    logStatus(`Choose your team for ${addedLeague.name || addedLeagueId} to use it as the default roster.`);
+  }
 }
 
 function logStatus(message) {
@@ -2682,26 +2722,127 @@ function renderDropCandidateCard(row) {
     </article>`;
 }
 
+function rosterOptionsMarkup(league, { markMyTeam = true } = {}) {
+  const myTeamRosterId = savedMyTeamRosterId(league);
+  return (league?.rosters || []).map(roster => {
+    const rosterId = Number(roster.roster_id);
+    const myTeamLabel = markMyTeam && rosterId === myTeamRosterId ? ' · My team' : '';
+    return `<option value="${rosterId}">${escapeHtml(teamName(league, rosterId))}${myTeamLabel}</option>`;
+  }).join('');
+}
+
+function teamSelectDefaultValue(league, {
+  previousValue = '',
+  previousLeagueId = '',
+  preferMyTeam = true,
+  preserve = true,
+  selections = state.myTeamByLeague
+} = {}) {
+  const leagueId = String(league?.league_id || '');
+  const rosterIds = (league?.rosters || []).map(roster => Number(roster.roster_id));
+  const previousRosterId = Number(previousValue);
+  if (preserve && previousLeagueId === leagueId && rosterIds.includes(previousRosterId)) {
+    return String(previousRosterId);
+  }
+  const preferredRosterId = preferMyTeam
+    ? defaultTeamRosterId(league, selections)
+    : Number(rosterIds[0] || 0);
+  return rosterIds.includes(preferredRosterId) ? String(preferredRosterId) : '';
+}
+
+function fillRosterSelect(select, league, { preferMyTeam = true, preserve = true } = {}) {
+  if (!select) return;
+  const previous = select.value;
+  const previousLeagueId = select.dataset.leagueId || '';
+  const leagueId = String(league?.league_id || '');
+  const hasRosters = Boolean(league?.rosters?.length);
+
+  select.innerHTML = hasRosters ? rosterOptionsMarkup(league) : '<option value="">No league loaded</option>';
+  select.disabled = !hasRosters;
+  select.dataset.leagueId = leagueId;
+  if (!hasRosters) return;
+
+  const nextValue = teamSelectDefaultValue(league, {
+    previousValue: previous,
+    previousLeagueId,
+    preferMyTeam,
+    preserve
+  });
+  if (nextValue) select.value = nextValue;
+}
+
+function fillMyTeamSelect() {
+  const select = $('myTeamSelect');
+  const help = $('myTeamHelp');
+  const setting = $('myTeamSetting');
+  if (!select) return;
+  const league = getSelectedLeague();
+
+  if (!league?.rosters?.length) {
+    select.innerHTML = '<option value="">No league loaded</option>';
+    select.disabled = true;
+    select.dataset.leagueId = '';
+    if (help) help.textContent = 'Add and select a league, then choose your roster.';
+    setting?.classList.remove('configured');
+    return;
+  }
+
+  const myTeamRosterId = savedMyTeamRosterId(league);
+  select.innerHTML = `<option value="">Choose your team</option>${rosterOptionsMarkup(league, { markMyTeam: false })}`;
+  select.disabled = false;
+  select.dataset.leagueId = String(league.league_id);
+  select.value = myTeamRosterId ? String(myTeamRosterId) : '';
+  if (help) {
+    help.textContent = myTeamRosterId
+      ? `${teamName(league, myTeamRosterId)} defaults across Lineup, Trade, Free Agency, and Draft.`
+      : `Choose your roster in ${league.name || 'this league'} to make every analyzer open on your team.`;
+  }
+  setting?.classList.toggle('configured', Boolean(myTeamRosterId));
+}
+
+function applyMyTeamSelection() {
+  const league = getSelectedLeague();
+  const select = $('myTeamSelect');
+  if (!league || !select) return;
+  const rosterId = Number(select.value);
+  const validRosterId = (league.rosters || []).some(roster => Number(roster.roster_id) === rosterId) ? rosterId : 0;
+  saveMyTeamForLeague(league.league_id, validRosterId || '');
+
+  const defaultRosterId = defaultTeamRosterId(league);
+  for (const id of ['lineupTeamSelect', 'freeAgencyTeamSelect', 'draftTeamSelect', 'teamASelect']) {
+    const control = $(id);
+    if (control && [...control.options].some(option => Number(option.value) === defaultRosterId)) {
+      control.value = String(defaultRosterId);
+    }
+  }
+  const teamB = $('teamBSelect');
+  if (teamB) {
+    const partner = [...teamB.options].find(option => Number(option.value) !== defaultRosterId);
+    if (partner) teamB.value = partner.value;
+  }
+  if ($('tradeTargetSideSelect')) $('tradeTargetSideSelect').value = 'A';
+
+  state.selectedAssets = { A: [], B: [] };
+  state.freeAgency.selectedPlayerId = '';
+  renderEverything();
+  scheduleTradeEvaluation(0);
+  logStatus(validRosterId
+    ? `${teamName(league, validRosterId)} is now your default team for ${league.name || league.league_id}.`
+    : `Cleared the default team for ${league.name || league.league_id}.`);
+}
+
 function fillFreeAgencyControls() {
   const league = getSelectedLeague();
   const select = $('freeAgencyTeamSelect');
   if (!select) return;
-  const previous = select.value;
-  select.innerHTML = league
-    ? league.rosters.map(roster => `<option value="${roster.roster_id}">${escapeHtml(teamName(league, roster.roster_id))}</option>`).join('')
-    : '<option value="">No league loaded</option>';
-  if (previous && [...select.options].some(option => option.value === previous)) select.value = previous;
+  fillRosterSelect(select, league);
 }
 
 function fillLineupControls() {
   const league = getSelectedLeague();
   const select = $('lineupTeamSelect');
   if (!select) return;
-  const previous = select.value;
-  select.innerHTML = league
-    ? league.rosters.map(roster => `<option value="${roster.roster_id}">${escapeHtml(teamName(league, roster.roster_id))}</option>`).join('')
-    : '<option value="">No league loaded</option>';
-  if (previous && [...select.options].some(option => option.value === previous)) select.value = previous;
+  fillRosterSelect(select, league);
 }
 
 function renderFreeAgencyAnalyzer() {
@@ -4348,7 +4489,11 @@ function renderLeagueList() {
   }
   const selected = localStorage.getItem(STORAGE_KEYS.selectedLeague) || state.leagues[0]?.league_id;
   el.className = 'league-list';
-  el.innerHTML = state.leagues.map(league => `<button class="league-card league-card-button ${String(league.league_id) === String(selected) ? 'active' : ''}" data-league-id="${escapeHtml(league.league_id)}"><strong>${escapeHtml(league.name || league.league_id)}</strong><small>${league.season} • ${league.total_rosters} teams • ${Object.keys(league.matchupsByWeek || {}).length} weeks • ${league.historyLoadedSeasons?.length ? `stats ${league.historyLoadedSeasons.join(', ')}` : 'league data only'}</small></button>`).join('');
+  el.innerHTML = state.leagues.map(league => {
+    const myTeamRosterId = savedMyTeamRosterId(league);
+    const myTeamText = myTeamRosterId ? `My team: ${teamName(league, myTeamRosterId)}` : 'My team not set';
+    return `<button class="league-card league-card-button ${String(league.league_id) === String(selected) ? 'active' : ''}" data-league-id="${escapeHtml(league.league_id)}"><strong>${escapeHtml(league.name || league.league_id)}</strong><small>${league.season} • ${league.total_rosters} teams • ${escapeHtml(myTeamText)} • ${Object.keys(league.matchupsByWeek || {}).length} weeks • ${league.historyLoadedSeasons?.length ? `stats ${league.historyLoadedSeasons.join(', ')}` : 'league data only'}</small></button>`;
+  }).join('');
   el.querySelectorAll('[data-league-id]').forEach(card => card.addEventListener('click', () => selectLeagueAcrossApp(card.dataset.leagueId)));
 }
 
@@ -4356,11 +4501,12 @@ function fillLeagueSelects() {
   const el = $('globalLeagueSelect');
   if (!el) return;
   const stored = localStorage.getItem(STORAGE_KEYS.selectedLeague);
-  const previous = el.value || stored;
+  const previous = stored || el.value;
   el.innerHTML = state.leagues.length
     ? state.leagues.map(l => `<option value="${l.league_id}">${escapeHtml(l.name || l.league_id)}</option>`).join('')
     : '<option value="">No league loaded</option>';
   if (previous && state.leagues.some(l => String(l.league_id) === String(previous))) el.value = previous;
+  fillMyTeamSelect();
   fillTeamSelects();
   fillLineupControls();
   fillFreeAgencyControls();
@@ -4371,14 +4517,13 @@ function fillLeagueSelects() {
 
 function fillTeamSelects() {
   const league = getSelectedLeague();
-  for (const id of ['teamASelect', 'teamBSelect']) {
-    const el = $(id);
-    const previous = el.value;
-    el.innerHTML = league ? league.rosters.map(r => `<option value="${r.roster_id}">${escapeHtml(teamName(league, r.roster_id))}</option>`).join('') : '';
-    if (previous && [...el.options].some(o => o.value === previous)) el.value = previous;
-  }
+  fillRosterSelect($('teamASelect'), league);
+  fillRosterSelect($('teamBSelect'), league, { preferMyTeam: false });
   const teamB = $('teamBSelect');
-  if (teamB.options.length > 1 && $('teamASelect').value === teamB.value) teamB.selectedIndex = 1;
+  if (teamB?.options.length > 1 && $('teamASelect')?.value === teamB.value) {
+    const partner = [...teamB.options].find(option => option.value !== $('teamASelect').value);
+    if (partner) teamB.value = partner.value;
+  }
   fillTeamPlayerSelects();
 }
 
@@ -5023,12 +5168,8 @@ function fillDraftControls() {
   const seasonSelect = $('draftSeasonSelect');
   if (!teamSelect || !seasonSelect) return;
   const league = getSelectedLeague();
-  const previousTeam = teamSelect.value;
   const previousSeason = Number(seasonSelect.value);
-  teamSelect.innerHTML = league
-    ? league.rosters.map(roster => `<option value="${roster.roster_id}">${escapeHtml(teamName(league, roster.roster_id))}</option>`).join('')
-    : '<option value="">No league loaded</option>';
-  if (previousTeam && [...teamSelect.options].some(option => option.value === previousTeam)) teamSelect.value = previousTeam;
+  fillRosterSelect(teamSelect, league);
 
   const seasons = availableDraftSeasons(league);
   seasonSelect.innerHTML = seasons.length
@@ -5842,6 +5983,10 @@ function exportData() {
   const data = {
     generatedAt: new Date().toISOString(),
     nflState: state.nflState,
+    preferences: {
+      selectedLeagueId: localStorage.getItem(STORAGE_KEYS.selectedLeague) || '',
+      myTeamByLeague: { ...state.myTeamByLeague }
+    },
     leagues: state.leagues.map(l => ({
       league: stripMaps(l),
       teamStrength: [...l.teamStrength.entries()],
@@ -6009,7 +6154,9 @@ function wireEvents() {
     state.freeAgency.selectedPlayerId = '';
     localStorage.removeItem(STORAGE_KEYS.leagues);
     localStorage.removeItem(STORAGE_KEYS.selectedLeague);
+    localStorage.removeItem(STORAGE_KEYS.myTeamByLeague);
     state.savedLeagueIds = [];
+    state.myTeamByLeague = {};
     if ($('leagueIdInput')) $('leagueIdInput').value = '';
     if ($('recapOutput')) $('recapOutput').value = '';
     renderEverything();
@@ -6037,6 +6184,8 @@ function wireEvents() {
     state.freeAgency.selectedPlayerId = '';
     renderEverything();
   });
+
+  $('myTeamSelect')?.addEventListener('change', applyMyTeamSelection);
 
   ['teamASelect', 'teamBSelect'].forEach(id => {
     $(id)?.addEventListener('change', () => {
@@ -6191,6 +6340,9 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     state,
     DEFAULT_SETTINGS,
+    savedMyTeamRosterId,
+    defaultTeamRosterId,
+    teamSelectDefaultValue,
     normalizePosition,
     isDynastyLeague,
     isSuperflexLeague,

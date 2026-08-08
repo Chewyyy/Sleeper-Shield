@@ -27,17 +27,6 @@
         </div>
       </div>
 
-      <nav class="tabs" aria-label="Primary navigation">
-        <button class="tab active" type="button" data-tab="dashboard" data-short="Home">Home</button>
-        <button class="tab" type="button" data-tab="lineup" data-short="Lineup">Lineup</button>
-        <button class="tab" type="button" data-tab="trade" data-short="Trade">Trade</button>
-        <button class="tab" type="button" data-tab="free-agency" data-short="FA">Free Agency</button>
-        <button class="tab" type="button" data-tab="draft" data-short="Draft">Draft</button>
-        <button class="tab" type="button" data-tab="recaps" data-short="Recaps">Recaps</button>
-        <button class="tab" type="button" data-tab="players" data-short="Players">Players</button>
-        <button class="tab" type="button" data-tab="settings" data-short="Settings">Settings</button>
-      </nav>
-
       <label class="league-switcher">
         <span>Active league</span>
         <select id="globalLeagueSelect" aria-label="Active league">
@@ -45,6 +34,82 @@
         </select>
       </label>
     </header>
+
+    <nav class="tabs" aria-label="Primary navigation">
+      <button class="tab active" type="button" data-tab="dashboard" aria-current="page" title="League home">
+        <svg class="tab-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="2.75" y="5" width="18.5" height="14" rx="3"></rect>
+          <path d="M7 5v14M17 5v14M12 5v14M4.8 9h2.2M17 9h2.2M4.8 15h2.2M17 15h2.2"></path>
+        </svg>
+        <span class="tab-label"><span class="tab-label-full">Home</span><span class="tab-label-short">Home</span></span>
+      </button>
+      <button class="tab" type="button" data-tab="lineup" title="Recommended lineup">
+        <svg class="tab-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="17" r="2"></circle>
+          <circle cx="12" cy="10" r="2"></circle>
+          <circle cx="5" cy="6" r="2"></circle>
+          <circle cx="12" cy="5" r="2"></circle>
+          <circle cx="19" cy="6" r="2"></circle>
+          <path d="M12 15v-3M10.4 9 6.7 7M13.6 9 17.3 7"></path>
+        </svg>
+        <span class="tab-label"><span class="tab-label-full">Lineup</span><span class="tab-label-short">Lineup</span></span>
+      </button>
+      <button class="tab" type="button" data-tab="trade" title="Trade analyzer">
+        <svg class="tab-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 7h14l-3-3M20 17H6l3 3"></path>
+          <path d="M8.5 12c1.9-2.2 5.1-2.2 7 0-1.9 2.2-5.1 2.2-7 0Z"></path>
+          <path d="m11 10.9 2 2.2M12 10.5v3"></path>
+        </svg>
+        <span class="tab-label"><span class="tab-label-full">Trade</span><span class="tab-label-short">Trade</span></span>
+      </button>
+      <button class="tab" type="button" data-tab="free-agency" title="Free agency analyzer">
+        <svg class="tab-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M8.2 4.5 4.5 6.4l1.7 4 2-1V20h7.6V9.4l2 1 1.7-4-3.7-1.9c-.7 1.3-2 2.1-3.8 2.1s-3.1-.8-3.8-2.1Z"></path>
+          <path d="M19.5 13v6M16.5 16h6"></path>
+        </svg>
+        <span class="tab-label"><span class="tab-label-full">Free Agency</span><span class="tab-label-short">FA</span></span>
+      </button>
+      <button class="tab" type="button" data-tab="draft" title="Draft analyzer">
+        <svg class="tab-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="5" y="3.5" width="14" height="17" rx="2.5"></rect>
+          <path d="M9 3.5v2h6v-2M8.5 10h7M8.5 15.5h3"></path>
+          <path d="M13.5 15c1.1-1.3 2.9-1.3 4 0-1.1 1.3-2.9 1.3-4 0Z"></path>
+        </svg>
+        <span class="tab-label"><span class="tab-label-full">Draft</span><span class="tab-label-short">Draft</span></span>
+      </button>
+      <button class="tab" type="button" data-tab="recaps" title="League recaps">
+        <svg class="tab-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M6 3.5h8.5L18.5 7v13.5H6Z"></path>
+          <path d="M14.5 3.5V7h4M9 10.5h6M9 14h4M9 17.5h6"></path>
+          <path d="M4 9v8"></path>
+        </svg>
+        <span class="tab-label"><span class="tab-label-full">Recaps</span><span class="tab-label-short">Recaps</span></span>
+      </button>
+      <button class="tab" type="button" data-tab="players" title="Player values">
+        <svg class="tab-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 12a8 8 0 0 1 16 0v3h-5l-2 3H8v-4H4Z"></path>
+          <path d="M8 14h7M18 10h3v5h-3M8 18v2"></path>
+        </svg>
+        <span class="tab-label"><span class="tab-label-full">Players</span><span class="tab-label-short">Players</span></span>
+      </button>
+      <button class="tab" type="button" data-tab="guides" title="Sleeper Shield guide">
+        <svg class="tab-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="3.5" y="3.5" width="17" height="17" rx="2.5"></rect>
+          <circle cx="8" cy="9" r="1.5"></circle>
+          <path d="M9.5 9H15l2-2M8 14v3M12 13.5l2 2.5 3-4M6 18h12"></path>
+        </svg>
+        <span class="tab-label"><span class="tab-label-full">Guides</span><span class="tab-label-short">Guide</span></span>
+      </button>
+      <button class="tab" type="button" data-tab="settings" title="League and model settings">
+        <svg class="tab-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 6h10M18 6h2M4 12h3M11 12h9M4 18h8M16 18h4"></path>
+          <circle cx="16" cy="6" r="2"></circle>
+          <circle cx="9" cy="12" r="2"></circle>
+          <circle cx="14" cy="18" r="2"></circle>
+        </svg>
+        <span class="tab-label"><span class="tab-label-full">Settings</span><span class="tab-label-short">Set</span></span>
+      </button>
+    </nav>
 
     <main class="main">
       <section id="dashboard" class="tab-panel active">
@@ -431,6 +496,259 @@
         </section>
       </section>
 
+      <section id="guides" class="tab-panel guide-page">
+        <div class="page-heading">
+          <div>
+            <span class="eyebrow">Sleeper Shield playbook</span>
+            <h2>Use every screen with confidence.</h2>
+            <p>A practical manual for reading the data, finding an edge, and knowing when the model should inform a decision instead of making it for you.</p>
+          </div>
+        </div>
+
+        <section class="panel guide-start-panel">
+          <div class="guide-start-copy">
+            <span class="panel-kicker">Start here</span>
+            <h3>The fastest setup</h3>
+            <ol class="guide-steps">
+              <li><strong>Add every league in Settings.</strong><span>Paste a Sleeper league ID, load the league, and repeat for any other league you manage.</span></li>
+              <li><strong>Set My Team for each league.</strong><span>Lineup, Trade Side A, Free Agency, and Draft will then open on the correct roster whenever you switch leagues.</span></li>
+              <li><strong>Use the active-league selector at the top.</strong><span>Scoring, format, roster construction, projections, values, needs, and draft capital all refresh for that league.</span></li>
+              <li><strong>Check confidence and context.</strong><span>A useful recommendation has both a strong model result and enough current data to support it.</span></li>
+            </ol>
+          </div>
+          <div class="guide-callout">
+            <strong>Best habit</strong>
+            <p>Start with the decision screen, open the involved players’ Weekly Stats, and then confirm injuries or breaking news before acting in Sleeper.</p>
+          </div>
+        </section>
+
+        <nav class="guide-toc" aria-label="Guide sections">
+          <a href="#guide-language">Data language</a>
+          <a href="#guide-lineup">Lineup</a>
+          <a href="#guide-trade">Trade</a>
+          <a href="#guide-fa">Free agency</a>
+          <a href="#guide-draft">Draft</a>
+          <a href="#guide-players">Players</a>
+          <a href="#guide-recaps">Recaps</a>
+          <a href="#guide-settings">Settings</a>
+          <a href="#guide-strategy">Strategy</a>
+        </nav>
+
+        <section id="guide-language" class="panel guide-section">
+          <div class="guide-heading">
+            <span class="guide-number">01</span>
+            <div><span class="panel-kicker">Foundation</span><h3>Understand the app’s data language</h3></div>
+          </div>
+          <p>Sleeper Shield separates four ideas that are often confused: projected points, player value, team fit, and confidence. A player can be highly valuable without being the best start this week, and a trade can be fair in market value while helping one roster much more than the other.</p>
+          <div class="guide-table-wrap">
+            <table class="guide-table">
+              <thead><tr><th>Term</th><th>What it means</th><th>How to use it</th></tr></thead>
+              <tbody>
+                <tr><td><strong>Projection</strong></td><td>Expected fantasy points from a weekly stat line or, when weekly data is unavailable, a season-rate fallback scored with your league settings.</td><td>Use it for lineup decisions and near-term roster impact, not as a guarantee.</td></tr>
+                <tr><td><strong>Value</strong></td><td>A long-form asset score blending format-specific market data, league-scored production and projections, replacement value, efficiency, availability, and dynasty age when applicable.</td><td>Use it to price trades and protect assets. Do not compare the number directly across unrelated leagues.</td></tr>
+                <tr><td><strong>VORP</strong></td><td>Value over replacement. It measures projected scoring above the level normally available for that position in this exact league structure.</td><td>Prioritize it at scarce starter positions, especially Superflex QB, premium TE, and deep IDP formats.</td></tr>
+                <tr><td><strong>Team fit</strong></td><td>The modeled change to starting-lineup output and depth after a move.</td><td>Use it as the tiebreaker between similarly priced players or offers.</td></tr>
+                <tr><td><strong>Confidence</strong></td><td>How much verified market, projection, production, and league data supports the result.</td><td>Demand a larger margin before acting on a low-confidence recommendation.</td></tr>
+                <tr><td><strong>Projected pick</strong></td><td>A draft slot estimated from original-roster strength because Sleeper has not published an exact order.</td><td>Treat the range as useful planning information, not a locked pick number.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="guide-note-grid">
+            <div><strong>League-specific means league-specific</strong><p>Superflex, TE premium, IDP demand, flex slots, roster depth, scoring bonuses, and team count can materially change the same player’s value.</p></div>
+            <div><strong>Two decimals are display precision</strong><p>The interface limits visible numbers to two decimals for clarity. It does not imply that projections are certain to that precision.</p></div>
+          </div>
+        </section>
+
+        <section id="guide-lineup" class="panel guide-section">
+          <div class="guide-heading">
+            <span class="guide-number">02</span>
+            <div><span class="panel-kicker">Weekly decisions</span><h3>Recommended Lineup</h3></div>
+          </div>
+          <p>The lineup optimizer fills the league’s exact legal starter slots with the highest projected combination. It accounts for weekly projections, your scoring settings, opponent, byes, injury availability, reserve and taxi status, and the opportunity cost of using a flexible player in one slot instead of another.</p>
+          <div class="guide-columns">
+            <div>
+              <h4>How to read each starter row</h4>
+              <ul>
+                <li><strong>Slot:</strong> the exact QB, RB2, FLEX, SUPER_FLEX, IDP, or other position being filled.</li>
+                <li><strong>Recommended player:</strong> the optimizer’s best choice for that specific slot.</li>
+                <li><strong>Upcoming-week projection:</strong> the points expected under the active league’s scoring.</li>
+                <li><strong>Matchup label:</strong> whether the weekly projection is above or below the player’s season baseline.</li>
+                <li><strong>Current Sleeper lineup:</strong> the player presently occupying that same slot. “Already set” means no change is needed.</li>
+                <li><strong>Weekly Stats:</strong> the game log and usage evidence behind the recommendation.</li>
+              </ul>
+            </div>
+            <div>
+              <h4>Lineup strategy</h4>
+              <ul>
+                <li>Prefer the recommendation when the projection gap is meaningful and both players have similar injury certainty.</li>
+                <li>When the gap is small, use role stability, snap share, starts, and recent stat production as the tiebreaker.</li>
+                <li>Question a high projection paired with falling snaps or an uncertain injury designation.</li>
+                <li>During the offseason and preseason, the app deliberately prepares Week 1. Current-slot comparisons remain visible, but start/sit change totals wait for the regular-season lineup cycle.</li>
+              </ul>
+            </div>
+          </div>
+          <div class="guide-callout warning"><strong>Do not chase tiny differences</strong><p>A projected edge of a few tenths can disappear with a role change, weather shift, or late injury report. The wider the uncertainty, the more projection separation you should require.</p></div>
+          <button class="secondary inline-action" type="button" data-open-tab="lineup">Open Recommended Lineup</button>
+        </section>
+
+        <section id="guide-trade" class="panel guide-section">
+          <div class="guide-heading">
+            <span class="guide-number">03</span>
+            <div><span class="panel-kicker">Market decisions</span><h3>Trade Analyzer</h3></div>
+          </div>
+          <p>Trade analysis begins with the market value of every player and pick, then applies package construction effects. It displays roster fit separately so a team need can explain why a fair deal is attractive without pretending that need changes the universal price of an asset.</p>
+          <ol class="guide-steps compact">
+            <li><strong>Confirm Team A.</strong><span>Your saved team defaults here. Team B should be the trade partner.</span></li>
+            <li><strong>Add the assets each team sends.</strong><span>Players and owned picks are available in each team’s picker. Current-year picks remain available before that rookie draft is completed.</span></li>
+            <li><strong>Read market fairness first.</strong><span>The verdict compares package-adjusted value and an uncertainty-based fair range.</span></li>
+            <li><strong>Read roster impact second.</strong><span>Projected starting-lineup and depth changes show whether the same trade solves a real problem.</span></li>
+            <li><strong>Inspect the player logs.</strong><span>Use weekly points, starts, snaps, and scoring events to test whether recent role supports the valuation.</span></li>
+          </ol>
+          <div class="guide-columns three">
+            <div><h4>Consolidation premium</h4><p>Several replaceable assets usually should not equal one elite difference-maker dollar for dollar. The model applies elite scarcity and package consolidation before deciding fairness.</p></div>
+            <div><h4>Suggested targets</h4><p>Targets are ranked from the selected partner by positional need, projected lineup gain, VORP, and what that partner would lose by moving the player.</p></div>
+            <div><h4>Generate Offer</h4><p>The offer search tests one-, two-, and three-asset combinations from your players and picks, then prioritizes the fair range and both teams’ roster needs.</p></div>
+          </div>
+          <div class="guide-callout"><strong>Negotiation edge</strong><p>Start with the generated offer, then look for a version that fills the other manager’s clearest need. A fair offer that visibly improves both rosters is easier to complete than one that only balances the value meter.</p></div>
+          <button class="secondary inline-action" type="button" data-open-tab="trade">Open Trade Analyzer</button>
+        </section>
+
+        <section id="guide-fa" class="panel guide-section">
+          <div class="guide-heading">
+            <span class="guide-number">04</span>
+            <div><span class="panel-kicker">Waiver decisions</span><h3>Free Agency Analyzer</h3></div>
+          </div>
+          <p>The Free Agency screen ranks only players who are unrostered in the active Sleeper league. It combines projected output, positional need, lineup improvement, depth, VORP, efficiency, and dynasty context, then models each possible pickup against specific drop candidates.</p>
+          <div class="guide-columns">
+            <div>
+              <h4>Pickup process</h4>
+              <ol>
+                <li>Select your team and choose Best fit or a position.</li>
+                <li>Open Weekly Stats on a target to check ownership, starts, snaps, and how he actually earned points.</li>
+                <li>Select Analyze pickup to see drop options.</li>
+                <li>Compare market-value change, lineup change, and depth change together.</li>
+              </ol>
+            </div>
+            <div>
+              <h4>Drop discipline</h4>
+              <ul>
+                <li><strong>Add:</strong> the swap improves the roster without sacrificing a more useful asset.</li>
+                <li><strong>Marginal:</strong> the move is close enough that role trend, schedule, and roster flexibility should decide it.</li>
+                <li><strong>Trade, do not drop:</strong> the cut candidate still has enough value that releasing him would waste an asset.</li>
+                <li>In dynasty, be especially careful with taxi players and young players whose immediate projection understates long-term value.</li>
+              </ul>
+            </div>
+          </div>
+          <div class="guide-callout warning"><strong>Roster percentage is context, not proof</strong><p>A low roster rate can identify an overlooked player. A high roster rate can validate market interest. Neither replaces role, scoring fit, or the cost of the player you would drop.</p></div>
+          <button class="secondary inline-action" type="button" data-open-tab="free-agency">Open Free Agency</button>
+        </section>
+
+        <section id="guide-draft" class="panel guide-section">
+          <div class="guide-heading">
+            <span class="guide-number">05</span>
+            <div><span class="panel-kicker">Rookie planning</span><h3>Draft Analyzer</h3></div>
+          </div>
+          <p>The rookie board answers two different questions. The left side identifies the best overall fits for the selected roster. The right side estimates which players are likely to remain available at each pick the team actually owns.</p>
+          <div class="guide-columns">
+            <div><h4>Best fits</h4><p>Fit rankings blend class quality, projection upside, draft capital signals, scoring, and positional need. Use this side to build a team-specific board before thinking about exact pick availability.</p></div>
+            <div><h4>Likely at your picks</h4><p>Availability follows traded-pick ownership and runs repeated, team-need-aware mock drafts. An exact pick has no prefix; a projected position begins with <strong>~</strong> until Sleeper publishes the order.</p></div>
+          </div>
+          <ul>
+            <li>Do not pass on a clearly superior prospect solely because another position is a greater immediate need.</li>
+            <li>Use availability percentages to decide whether you can wait until a later pick or should move up.</li>
+            <li>Future picks are discounted because both timing and eventual draft position are uncertain.</li>
+            <li>Recheck the board after trades because team strength, needs, and pick ownership can all change.</li>
+          </ul>
+          <button class="secondary inline-action" type="button" data-open-tab="draft">Open Draft Analyzer</button>
+        </section>
+
+        <section id="guide-players" class="panel guide-section">
+          <div class="guide-heading">
+            <span class="guide-number">06</span>
+            <div><span class="panel-kicker">Evidence room</span><h3>Players and Weekly Stats</h3></div>
+          </div>
+          <p>The Players tab is the best place to investigate why the model likes or dislikes an asset. Tap two rows to compare player cards, or expand Weekly Stats anywhere it appears in Lineup, Trade, Free Agency, or Players.</p>
+          <div class="guide-table-wrap">
+            <table class="guide-table">
+              <thead><tr><th>Weekly field</th><th>What it tells you</th><th>What to watch</th></tr></thead>
+              <tbody>
+                <tr><td><strong>Rostered %</strong></td><td>The share of Sleeper leagues of the active league type that roster the player.</td><td>Market interest and whether a waiver opportunity is unusually available.</td></tr>
+                <tr><td><strong>Started %</strong></td><td>The share of Sleeper leagues starting the player that week.</td><td>Whether managers view the player as a lineup option, not merely a stash.</td></tr>
+                <tr><td><strong>Snaps / Snap %</strong></td><td>Raw snaps and the player’s share of available team snaps for his side of the ball.</td><td>Role growth, role loss, or a score that came on limited usage.</td></tr>
+                <tr><td><strong>FPTS</strong></td><td>Exact Sleeper matchup points when available; otherwise the detailed stat line is rescored using the active league settings.</td><td>Whether production is stable and how strongly this scoring format changes the result.</td></tr>
+                <tr><td><strong>Position stats</strong></td><td>Relevant events such as sacks, tackles, targets, receptions, yardage, touchdowns, turnovers, or kicking production.</td><td>Columns with more scoring value appear farther left. A point total marked <strong>*</strong> includes an earned bonus.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="guide-note-grid">
+            <div><strong>Trend beats one spike</strong><p>A rising snap share plus repeatable volume is more persuasive than one large fantasy score on an unusual touchdown or turnover.</p></div>
+            <div><strong>Compare like with like</strong><p>Use the same season and league scoring when comparing players. Current and prior available seasons load on demand.</p></div>
+          </div>
+          <button class="secondary inline-action" type="button" data-open-tab="players">Open Players</button>
+        </section>
+
+        <section id="guide-recaps" class="panel guide-section">
+          <div class="guide-heading">
+            <span class="guide-number">07</span>
+            <div><span class="panel-kicker">League communication</span><h3>Home and Recaps</h3></div>
+          </div>
+          <div class="guide-columns">
+            <div><h4>Home</h4><p>Use standings, modeled roster strength, and league-rule summaries as a quick context check. Roster strength is an outlook, not a duplicate of win-loss record, so it can identify contenders whose record has lagged their underlying team.</p></div>
+            <div><h4>Recaps</h4><p>Select a week, recent four-week window, season-to-date range, offseason movement, or draft recap. The output is generated automatically and can be copied for league chat.</p></div>
+          </div>
+          <p>For the best recap, wait until Sleeper has finalized scoring and transactions for the selected range. Treat narrative labels as summaries of the loaded data, and review names and numbers before posting.</p>
+          <button class="secondary inline-action" type="button" data-open-tab="recaps">Open Recaps</button>
+        </section>
+
+        <section id="guide-settings" class="panel guide-section">
+          <div class="guide-heading">
+            <span class="guide-number">08</span>
+            <div><span class="panel-kicker">Control room</span><h3>Settings and My Team</h3></div>
+          </div>
+          <div class="guide-columns">
+            <div>
+              <h4>League management</h4>
+              <ul>
+                <li>League IDs and My Team selections are saved on this device.</li>
+                <li>Each league keeps its own My Team setting.</li>
+                <li>Switching leagues applies that league’s saved default to Lineup, Trade Side A, Free Agency, and Draft.</li>
+                <li>Temporarily choosing another team in an analyzer does not overwrite My Team.</li>
+                <li>Export data creates a local snapshot. Clear saved leagues removes league and team-default preferences from this browser.</li>
+              </ul>
+            </div>
+            <div>
+              <h4>Model controls</h4>
+              <ul>
+                <li><strong>Dynasty age and horizon:</strong> changes the influence of position-specific career timing. It is hidden in redraft.</li>
+                <li><strong>Recent production:</strong> changes the influence of verified recent scoring.</li>
+                <li><strong>Projection:</strong> changes the influence of expected future output.</li>
+                <li><strong>Efficiency:</strong> changes the controlled influence of production relative to opportunity.</li>
+                <li><strong>Team need:</strong> changes recommendation fit, not the underlying universal market price.</li>
+                <li><strong>Draft-pick aggressiveness:</strong> changes how strongly the model prices rookie picks.</li>
+              </ul>
+            </div>
+          </div>
+          <div class="guide-callout"><strong>Change weights deliberately</strong><p>Move one control at a time and observe several players or offers before keeping the change. Extreme settings can reflect your philosophy, but they do not create better underlying data.</p></div>
+          <button class="secondary inline-action" type="button" data-open-tab="settings">Open Settings</button>
+        </section>
+
+        <section id="guide-strategy" class="panel guide-section">
+          <div class="guide-heading">
+            <span class="guide-number">09</span>
+            <div><span class="panel-kicker">Decision workflows</span><h3>Use Sleeper Shield strategically</h3></div>
+          </div>
+          <div class="guide-strategy-grid">
+            <article><span>Weekly</span><h4>Set the lineup</h4><p>Review recommended changes, compare current-slot projections, inspect close calls in Weekly Stats, then confirm late injuries before kickoff.</p></article>
+            <article><span>Waivers</span><h4>Buy role before points</h4><p>Look for rising snap share and repeatable volume before the fantasy score fully arrives. Confirm that the proposed drop is truly expendable.</p></article>
+            <article><span>Trades</span><h4>Separate price from purpose</h4><p>First require fair market value. Then use lineup and depth impact to identify the version of the deal that best advances your roster plan.</p></article>
+            <article><span>Dynasty</span><h4>Balance windows</h4><p>Contenders can accept some age for immediate VORP; rebuilders should protect young elite assets and picks without treating every veteran as worthless.</p></article>
+            <article><span>Draft</span><h4>Plan tiers, not one name</h4><p>Use fit and availability together to identify several acceptable players at each pick and where a trade up or down creates value.</p></article>
+            <article><span>Uncertainty</span><h4>Demand a margin</h4><p>The lower the confidence or the more volatile the role, the larger the modeled advantage should be before you act.</p></article>
+          </div>
+          <div class="guide-callout warning"><strong>Final check</strong><p>Sleeper Shield uses public, read-only data. It cannot know private trade talks, breaking news that has not reached the feeds, contract or salary rules, off-platform assets, coaching intent, or your league mates’ personal preferences. Use the model as disciplined evidence, not automatic authority.</p></div>
+        </section>
+      </section>
+
       <section id="settings" class="tab-panel">
         <div class="page-heading">
           <div>
@@ -451,6 +769,18 @@
               <button id="addLeagueIdBtn" class="primary" type="button">Add league</button>
             </div>
             <p class="hint">Public Sleeper data only. Saved leagues load automatically on this device.</p>
+            <div id="myTeamSetting" class="my-team-setting">
+              <div class="my-team-setting-copy">
+                <span class="panel-kicker">Team defaults</span>
+                <strong>Set your team for this league</strong>
+                <p id="myTeamHelp">Add and select a league, then choose your roster.</p>
+              </div>
+              <label class="my-team-select-label" for="myTeamSelect">My team
+                <select id="myTeamSelect" disabled>
+                  <option value="">No league loaded</option>
+                </select>
+              </label>
+            </div>
             <div id="loadedLeagues" class="league-list empty">No leagues loaded.</div>
             <div class="button-row settings-data-actions">
               <button id="exportDataBtn" class="secondary" type="button">Export data</button>
