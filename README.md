@@ -15,7 +15,12 @@ Then open `http://localhost:5173`.
 - Uses Sleeper public/read-only API data.
 - League IDs save locally in the browser and auto-load on the device.
 - The Recommended Lineup view automatically targets Sleeper's upcoming regular-season display week; during the offseason and preseason it prepares Week 1.
+- Lineup, Trade, Free Agency, and Players views include a shared expandable weekly player log. It loads the available current and prior seasons on demand so free agents and comparison players receive the same detail as rostered players.
+- Weekly usage includes Sleeper-wide rostered and started percentages for the active league type (dynasty or redraft), raw snap counts, and per-game snap share calculated from Sleeper player/team snap totals.
+- Weekly fantasy points preserve Sleeper's exact league matchup score when available. Other historical rows are rescored from Sleeper's stat line using the active league settings.
+- Position-specific stats are ordered from higher to lower league scoring value. Each scoring stat shows its raw result and point contribution; the asterisk notes that earned bonuses are included.
 - Lineups are optimized across the league's exact legal starter slots using matchup-specific projected stat lines scored under the league's settings. Missing weekly data falls back to season forecasts and is labeled clearly.
+- Every recommended starter is paired with the player currently occupying that exact Sleeper lineup slot, and both show the upcoming week's projected points for an immediate slot-by-slot comparison.
 - Matchup boosts and fades compare each player's weekly projection with his season baseline. Bye, out, IR/reserve, suspended, inactive, and taxi players are excluded, while injury-questionable players remain visible with a warning.
 - Trade dropdowns include rostered players and owned draft picks, including current-year rookie picks when the draft has not been completed.
 - Player values use format-specific Sleeper ADP, league-scored projections, value over replacement, verified production, opportunity-adjusted efficiency, and dynasty-only player age/career-horizon curves.
@@ -30,8 +35,6 @@ Then open `http://localhost:5173`.
 - The rookie fit board ranks the best overall roster fits on the left and likely options at each owned pick on the right.
 - Draft availability uses exact Sleeper draft order when published, projects unset slots from roster strength, follows traded-pick ownership, and runs repeated team-need-aware mock drafts.
 - League management lives in Settings; the active league selector is available globally.
-- A per-league My Team preference defaults the Lineup, Trade, Free Agency, and Draft analyzers to the saved roster on that device.
-- Primary navigation uses a persistent bottom dock with football-themed icons and compact mobile labels.
 - Displayed numeric outputs are capped at two decimal places.
 - The generated Sleeper Shield identity is included as install icons, an Apple touch icon, browser favicons, and the in-app brand mark.
 

@@ -5,10 +5,10 @@
 const API_BASE = 'https://api.sleeper.app/v1';
 const API_STATS_BASE = 'https://api.sleeper.com/stats/nfl/player';
 const API_PROJECTIONS_BASE = 'https://api.sleeper.com/projections/nfl';
+const API_OWNERSHIP_BASE = 'https://api.sleeper.com/players/nfl/research';
 const STORAGE_KEYS = {
   leagues: 'sts.leagueIds',
   selectedLeague: 'sts.selectedLeagueId',
-  myTeamByLeague: 'sts.myTeamByLeague',
   settings: 'sts.settings'
 };
 
@@ -45,6 +45,9 @@ const FLEX_SLOTS = new Set(['FLEX', 'REC_FLEX', 'WRRB_FLEX', 'WRT', 'RB_WR_TE'])
 const SUPER_FLEX_SLOTS = new Set(['SUPER_FLEX', 'SUPERFLEX', 'OP']);
 const IDP_FLEX_SLOTS = new Set(['IDP_FLEX', 'DL_LB_DB']);
 const RECENT_GAME_COUNT = 5;
+const PLAYER_DETAIL_SEASON_LIMIT = 3;
+const PLAYER_DETAIL_CACHE_HOURS = 12;
+const OWNERSHIP_CACHE_HOURS = 6;
 const DRAFT_PICK_LOOKAHEAD_YEARS = 3;
 const DRAFT_AVAILABILITY_SIMULATIONS = 180;
 
@@ -81,10 +84,12 @@ const state = {
   weeklySchedule: new Map(),
   weeklyProjectionMeta: null,
   weeklyProjectionError: '',
+  playerOwnership: new Map(),
+  playerOwnershipLoads: new Map(),
+  playerDetailLoads: new Map(),
   playerSearch: [],
   leagues: [],
   savedLeagueIds: loadSavedLeagueIds(),
-  myTeamByLeague: loadMyTeamByLeague(),
   selectedAssets: { A: [], B: [] },
   freeAgency: { selectedPlayerId: '' },
   settings: loadSettings()
@@ -121,37 +126,6 @@ function saveLeagueIds(ids) {
   localStorage.setItem(STORAGE_KEYS.leagues, state.savedLeagueIds.join('\n'));
 }
 
-function loadMyTeamByLeague() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEYS.myTeamByLeague) || '{}');
-    if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return {};
-    return Object.fromEntries(Object.entries(saved)
-      .map(([leagueId, rosterId]) => [String(leagueId), String(rosterId)])
-      .filter(([leagueId, rosterId]) => /^\d{10,}$/.test(leagueId) && /^\d+$/.test(rosterId)));
-  } catch {
-    return {};
-  }
-}
-
-function saveMyTeamForLeague(leagueId, rosterId) {
-  const leagueKey = String(leagueId || '').trim();
-  const rosterKey = String(rosterId || '').trim();
-  if (!leagueKey) return;
-  if (rosterKey) state.myTeamByLeague[leagueKey] = rosterKey;
-  else delete state.myTeamByLeague[leagueKey];
-  localStorage.setItem(STORAGE_KEYS.myTeamByLeague, JSON.stringify(state.myTeamByLeague));
-}
-
-function savedMyTeamRosterId(league, selections = state.myTeamByLeague) {
-  if (!league) return 0;
-  const rosterId = Number(selections?.[String(league.league_id)]);
-  return (league.rosters || []).some(roster => Number(roster.roster_id) === rosterId) ? rosterId : 0;
-}
-
-function defaultTeamRosterId(league, selections = state.myTeamByLeague) {
-  return savedMyTeamRosterId(league, selections) || Number(league?.rosters?.[0]?.roster_id || 0);
-}
-
 async function addSavedLeagueId() {
   const input = $('leagueIdInput');
   const addedIds = parseLeagueIds(input.value);
@@ -160,17 +134,10 @@ async function addSavedLeagueId() {
     return;
   }
   const ids = [...new Set([...state.savedLeagueIds, ...addedIds])];
-  const addedLeagueId = addedIds.find(id => !state.savedLeagueIds.includes(id)) || addedIds[0];
   saveLeagueIds(ids);
-  localStorage.setItem(STORAGE_KEYS.selectedLeague, addedLeagueId);
   input.value = '';
   logStatus(`Added ${addedIds.length} league${addedIds.length === 1 ? '' : 's'}; ${ids.length} saved on this device.`);
   await loadAll(ids);
-  const addedLeague = state.leagues.find(league => String(league.league_id) === String(addedLeagueId));
-  if (addedLeague && !savedMyTeamRosterId(addedLeague)) {
-    $('myTeamSelect')?.focus({ preventScroll: true });
-    logStatus(`Choose your team for ${addedLeague.name || addedLeagueId} to use it as the default roster.`);
-  }
 }
 
 function logStatus(message) {
@@ -692,7 +659,15 @@ function buildPlayerStats(league) {
         rec.total += pts;
         rec.games += 1;
         rec.high = Math.max(rec.high, pts);
-        rec.weeks.push({ week, season: Number(league.season || currentSeasonNumber(league)), seasonType: week >= safeNumber(league.settings?.playoff_week_start, 15) ? 'post' : 'regular', points: pts, started: didStart, rosterId: matchup.roster_id });
+        rec.weeks.push({
+          week,
+          season: Number(league.season || currentSeasonNumber(league)),
+          seasonType: week >= safeNumber(league.settings?.playoff_week_start, 15) ? 'post' : 'regular',
+          points: pts,
+          started: didStart,
+          rosterId: matchup.roster_id,
+          pointsSource: 'league'
+        });
         rec.rosterIds.add(matchup.roster_id);
         if (didStart) {
           rec.starts += 1;
@@ -725,9 +700,12 @@ function historicalSeasonsToLoad(league) {
   return [start, start - 1, start - 2].filter(season => season >= 2018);
 }
 
+function scoringSettingsHash(league) {
+  return JSON.stringify(league?.scoring_settings || {}).split('').reduce((hash, ch) => ((hash << 5) - hash + ch.charCodeAt(0)) | 0, 0);
+}
+
 function leagueHistoryCacheKey(league, seasons) {
-  const scoringHash = JSON.stringify(league.scoring_settings || {}).split('').reduce((hash, ch) => ((hash << 5) - hash + ch.charCodeAt(0)) | 0, 0);
-  return `history.${league.league_id}.${seasons.join('-')}.${scoringHash}.v7`;
+  return `history.${league.league_id}.${seasons.join('-')}.${scoringSettingsHash(league)}.v7`;
 }
 
 function rosteredPlayerIds(league) {
@@ -736,7 +714,7 @@ function rosteredPlayerIds(league) {
 
 async function fetchHistoricalStatsForLeague(league) {
   const seasons = historicalSeasonsToLoad(league);
-  const playerIds = rosteredPlayerIds(league).slice(0, 320);
+  const playerIds = rosteredPlayerIds(league).slice(0, 300);
   if (!playerIds.length || !seasons.length) return;
 
   const cacheKey = leagueHistoryCacheKey(league, seasons);
@@ -785,6 +763,93 @@ async function fetchHistoricalStatsForLeague(league) {
   logStatus(rows.length ? `Historical stats loaded: ${rows.length.toLocaleString()} player-week rows.` : `Historical stats were unavailable from the public stats endpoint.`);
 }
 
+function playerDetailHistoryCacheKey(league, playerId, seasons) {
+  return `player-detail.${league.league_id}.${playerId}.${seasons.join('-')}.${scoringSettingsHash(league)}.v2`;
+}
+
+function historicalRowsFromEntry(entry) {
+  return Object.values(entry?.seasons || {}).flatMap(rec => (rec?.weeks || []).map(row => ({
+    playerId: String(rec.playerId || entry.playerId),
+    season: Number(row.season || rec.season),
+    week: Number(row.week),
+    points: safeNumber(row.points, 0),
+    stats: row.stats || null,
+    started: Boolean(row.started),
+    rosterId: row.rosterId ?? null,
+    seasonType: row.seasonType || 'regular',
+    opponent: row.opponent || '',
+    team: row.team || '',
+    date: row.date || '',
+    gameId: row.gameId || ''
+  })));
+}
+
+function applyPlayerHistoricalRows(league, playerId, rows) {
+  const pid = String(playerId);
+  const combined = [...historicalRowsFromEntry(league.historicalStats?.get(pid)), ...(rows || [])];
+  const deduped = new Map();
+  for (const row of combined) {
+    if (!row || !row.week || !row.season) continue;
+    deduped.set(`${row.season}-${row.seasonType || 'regular'}-${row.week}`, { ...row, playerId: pid });
+  }
+  applyHistoricalRows(league, [...deduped.values()]);
+}
+
+async function fetchHistoricalStatsForPlayer(league, playerId) {
+  const pid = String(playerId);
+  const seasons = historicalSeasonsToLoad(league).slice(0, PLAYER_DETAIL_SEASON_LIMIT);
+  if (!league || !pid || !seasons.length) return [];
+
+  const existingSeasons = league.historicalStats?.get(pid)?.seasons || {};
+  const missingSeasons = seasons.filter(season => {
+    const record = existingSeasons[Number(season)];
+    return !recordHasGames(record) || !(record.weeks || []).some(row => row.stats && (row.opponent || row.team));
+  });
+  if (!missingSeasons.length) return historicalRowsFromEntry(league.historicalStats.get(pid));
+
+  const loadKey = `${league.league_id}:${pid}:${missingSeasons.join('-')}`;
+  if (state.playerDetailLoads.has(loadKey)) return state.playerDetailLoads.get(loadKey);
+
+  const promise = (async () => {
+    const cacheKey = playerDetailHistoryCacheKey(league, pid, missingSeasons);
+    const cached = await idbGet(cacheKey).catch(() => null);
+    const maxAge = PLAYER_DETAIL_CACHE_HOURS * 60 * 60 * 1000;
+    let rows = [];
+
+    if (cached?.rows && Date.now() - cached.savedAt < maxAge) {
+      rows = cached.rows;
+    } else {
+      const payloads = await Promise.all(missingSeasons.map(async season => {
+        try {
+          const payload = await fetchJson(
+            `${API_STATS_BASE}/${encodeURIComponent(pid)}?season_type=regular&season=${season}&grouping=week`,
+            `stats ${pid} ${season}`
+          );
+          return normalizeHistoricalPayload(pid, season, payload, league, 'regular');
+        } catch (err) {
+          console.warn(err);
+          return [];
+        }
+      }));
+      rows = payloads.flat();
+      await idbSet(cacheKey, { savedAt: Date.now(), rows }).catch(() => null);
+    }
+
+    if (rows.length) {
+      applyPlayerHistoricalRows(league, pid, rows);
+      league.valueCache?.delete?.(pid);
+      league.historyLoadedSeasons = [...new Set([...(league.historyLoadedSeasons || []), ...rows.map(row => Number(row.season))])]
+        .filter(Boolean)
+        .sort((a, b) => b - a);
+      league.weekRankCache?.clear?.();
+    }
+    return rows;
+  })().finally(() => state.playerDetailLoads.delete(loadKey));
+
+  state.playerDetailLoads.set(loadKey, promise);
+  return promise;
+}
+
 function normalizeHistoricalPayload(playerId, season, payload, league, seasonType = 'regular') {
   if (!payload) return [];
   const entries = Array.isArray(payload)
@@ -805,7 +870,11 @@ function normalizeHistoricalPayload(playerId, season, payload, league, seasonTyp
       stats,
       started: false,
       rosterId: null,
-      seasonType: seasonType === 'post' ? 'post' : 'regular'
+      seasonType: seasonType === 'post' ? 'post' : 'regular',
+      opponent: String(raw.opponent || raw.opp || ''),
+      team: String(raw.team || raw.team_abbr || ''),
+      date: String(raw.date || ''),
+      gameId: String(raw.game_id || '')
     };
   }).filter(row => row.week && Number.isFinite(row.points) && historicalStatLinePlayed(row.stats, row.points));
 }
@@ -831,7 +900,9 @@ function fantasyPointsFromStats(stats = {}, scoring = {}, position = 'UNK', opti
     const bonusRules = [
       ['bonus_pass_yd_300', 'pass_yd', 300], ['bonus_pass_yd_400', 'pass_yd', 400],
       ['bonus_rush_yd_100', 'rush_yd', 100], ['bonus_rush_yd_200', 'rush_yd', 200],
-      ['bonus_rec_yd_100', 'rec_yd', 100], ['bonus_rec_yd_200', 'rec_yd', 200]
+      ['bonus_rec_yd_100', 'rec_yd', 100], ['bonus_rec_yd_200', 'rec_yd', 200],
+      ['bonus_pass_cmp_25', 'pass_cmp', 25], ['bonus_sack_2p', 'idp_sack', 2],
+      ['bonus_tkl_10p', 'idp_tkl', 10], ['idp_pass_def_3p', 'idp_pass_def', 3]
     ];
     for (const [bonusKey, statKey, threshold] of bonusRules) {
       if (safeNumber(scoring[bonusKey]) && safeNumber(stats[statKey]) >= threshold && !Object.prototype.hasOwnProperty.call(stats, bonusKey)) {
@@ -887,7 +958,12 @@ function addWeekToRecord(rec, row) {
     started: didStart,
     rosterId: row.rosterId ?? row.roster_id ?? null,
     stats: row.stats || null,
-    seasonType: row.seasonType || 'regular'
+    seasonType: row.seasonType || 'regular',
+    opponent: row.opponent || row.opp || '',
+    team: row.team || '',
+    date: row.date || '',
+    gameId: row.gameId || row.game_id || '',
+    pointsSource: row.pointsSource || (row.rosterId || row.roster_id ? 'league' : 'calculated')
   });
   if (row.rosterId || row.roster_id) rec.rosterIds.add(row.rosterId ?? row.roster_id);
   if (didStart) {
@@ -932,6 +1008,98 @@ function displayRecordForPlayer(league, playerId) {
     return record || blankStatRecord(playerId, Number(mode));
   }
   return productionRecord(league, playerId) || blankStatRecord(playerId);
+}
+
+function ownershipLeagueType(league) {
+  return isDynastyLeague(league) ? 2 : 0;
+}
+
+function ownershipSeasonTypeForRow(row) {
+  return Number(row?.week) <= 18 ? 'regular' : (row?.seasonType === 'post' ? 'post' : 'regular');
+}
+
+function ownershipPeriodKey(league, season, week, seasonType = 'regular') {
+  return `${ownershipLeagueType(league)}:${seasonType}:${Number(season)}:${Number(week)}`;
+}
+
+function ownershipForPlayerWeek(league, playerId, row) {
+  const season = Number(row?.season || currentSeasonNumber(league));
+  const week = Number(row?.week);
+  if (!season || !week) return null;
+  const key = ownershipPeriodKey(league, season, week, ownershipSeasonTypeForRow(row));
+  const payload = state.playerOwnership.get(key);
+  const value = payload?.[String(playerId)] || null;
+  if (!value) return null;
+  const owned = percentValue(value.owned ?? value.rostered ?? value.roster_pct ?? value.rostered_pct);
+  const started = percentValue(value.started ?? value.start_pct ?? value.started_pct);
+  return {
+    owned: Number.isFinite(owned) ? owned : null,
+    started: Number.isFinite(started) ? started : null
+  };
+}
+
+async function loadOwnershipWeek(league, season, week, seasonType = 'regular') {
+  const leagueType = ownershipLeagueType(league);
+  const key = ownershipPeriodKey(league, season, week, seasonType);
+  if (state.playerOwnership.has(key)) return state.playerOwnership.get(key);
+  if (state.playerOwnershipLoads.has(key)) return state.playerOwnershipLoads.get(key);
+
+  const promise = (async () => {
+    const cacheKey = `ownership.nfl.${leagueType}.${seasonType}.${season}.${week}.v1`;
+    const cached = await idbGet(cacheKey).catch(() => null);
+    const maxAge = OWNERSHIP_CACHE_HOURS * 60 * 60 * 1000;
+    if (cached?.rows && Date.now() - cached.savedAt < maxAge) {
+      state.playerOwnership.set(key, cached.rows);
+      return cached.rows;
+    }
+
+    const params = new URLSearchParams({
+      sport: 'nfl',
+      season: String(season),
+      season_type: seasonType,
+      week: String(week),
+      league_type: String(leagueType)
+    });
+    const rows = await fetchJson(
+      `${API_OWNERSHIP_BASE}/${seasonType}/${season}/${week}?${params.toString()}`,
+      `Sleeper ownership ${season} week ${week}`
+    );
+    const normalized = rows?.data && typeof rows.data === 'object' ? rows.data : (rows || {});
+    state.playerOwnership.set(key, normalized);
+    await idbSet(cacheKey, { savedAt: Date.now(), rows: normalized }).catch(() => null);
+    return normalized;
+  })().finally(() => state.playerOwnershipLoads.delete(key));
+
+  state.playerOwnershipLoads.set(key, promise);
+  return promise;
+}
+
+async function fetchOwnershipForRecords(league, records = []) {
+  const periods = new Map();
+  for (const rec of records || []) {
+    for (const row of rec?.weeks || []) {
+      const season = Number(row.season || rec.season || currentSeasonNumber(league));
+      const week = Number(row.week);
+      if (!season || !week) continue;
+      const seasonType = ownershipSeasonTypeForRow(row);
+      const key = ownershipPeriodKey(league, season, week, seasonType);
+      periods.set(key, { season, week, seasonType });
+    }
+  }
+
+  const tasks = [...periods.values()];
+  let taskIndex = 0;
+  async function worker() {
+    while (taskIndex < tasks.length) {
+      const task = tasks[taskIndex++];
+      try {
+        await loadOwnershipWeek(league, task.season, task.week, task.seasonType);
+      } catch (err) {
+        console.warn(err);
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(6, tasks.length) }, worker));
 }
 
 function clamp01(value) {
@@ -1854,6 +2022,29 @@ function optimizeLineupAssignments(league, candidates = []) {
   };
 }
 
+function currentLineupSlotsForRoster(league, roster, candidateDetails = []) {
+  if (!league || !roster) return [];
+  const taxi = new Set((roster.taxi || []).map(String));
+  const reserve = new Set((roster.reserve || []).map(String));
+  const candidateMap = new Map((candidateDetails || []).map(detail => [String(detail.playerId), detail]));
+  const starterSlots = (league.roster_positions || [])
+    .map((slot, index) => ({ slot: String(slot).toUpperCase(), index }))
+    .filter(({ slot }) => !['BN', 'BE', 'IR', 'TAXI'].includes(slot));
+  const currentIds = roster.starters || [];
+
+  return starterSlots.map((slot, starterIndex) => {
+    const playerId = String(currentIds[starterIndex] || '');
+    const hasPlayer = playerId && playerId !== '0';
+    const detail = hasPlayer
+      ? candidateMap.get(playerId) || weeklyProjectionForPlayer(league, playerId, {
+        isTaxi: taxi.has(playerId),
+        isReserve: reserve.has(playerId)
+      })
+      : null;
+    return { ...slot, playerId: hasPlayer ? playerId : '', detail };
+  });
+}
+
 function recommendedLineupForRoster(league, rosterId) {
   const roster = league?.rosterMap?.get(Number(rosterId));
   const period = upcomingLineupPeriod();
@@ -1873,10 +2064,18 @@ function recommendedLineupForRoster(league, rosterId) {
       isReserve: reserve.has(playerId)
     }));
   const optimized = optimizeLineupAssignments(league, candidates);
+  const currentSlots = currentLineupSlotsForRoster(league, roster, candidates);
+  const currentBySlotIndex = new Map(currentSlots.map(row => [Number(row.index), row]));
   const starters = optimized.bySlot.map(row => ({
     slot: row.slot,
     slotIndex: row.index,
-    detail: row.detail
+    detail: row.detail,
+    currentPlayerId: currentBySlotIndex.get(Number(row.index))?.playerId || '',
+    currentDetail: currentBySlotIndex.get(Number(row.index))?.detail || null,
+    sameAsCurrent: Boolean(
+      row.detail?.playerId
+      && String(row.detail.playerId) === String(currentBySlotIndex.get(Number(row.index))?.playerId || '')
+    )
   }));
   const selected = new Set(optimized.selected);
   const bench = candidates
@@ -1911,7 +2110,8 @@ function recommendedLineupForRoster(league, rosterId) {
     confidence,
     weeklyCount,
     filled: filledStarters.length,
-    slotCount: starters.length
+    slotCount: starters.length,
+    currentSlots
   };
 }
 
@@ -2436,7 +2636,8 @@ function freeAgentReasonLabels(row) {
 }
 
 function renderFreeAgentCard(row, selected = false) {
-  const ageContext = dynastyAgeSummary(getSelectedLeague(), row.playerId);
+  const league = getSelectedLeague();
+  const ageContext = dynastyAgeSummary(league, row.playerId);
   return `
     <article class="free-agent-card ${selected ? 'selected' : ''}">
       <div class="free-agent-card-topline">
@@ -2451,11 +2652,13 @@ function renderFreeAgentCard(row, selected = false) {
       </div>
       <div class="recommendation-badges">${freeAgentReasonLabels(row).map(label => `<span class="badge">${escapeHtml(label)}</span>`).join('')}</div>
       ${ageContext ? `<p class="card-context">${escapeHtml(ageContext)}</p>` : ''}
+      ${renderPlayerWeeklyDetailsDisclosure(league, row.playerId, { compact: true })}
       <button class="secondary analyze-pickup-button" type="button" data-analyze-free-agent="${escapeHtml(row.playerId)}">${selected ? 'Analyzing pickup' : 'Analyze pickup'}</button>
     </article>`;
 }
 
 function renderDropCandidateCard(row) {
+  const league = getSelectedLeague();
   const rosterRole = row.isTaxi ? 'Taxi' : row.isReserve ? 'IR/reserve' : row.isStarter ? 'Projected starter' : 'Depth player';
   return `
     <article class="drop-candidate-card">
@@ -2475,6 +2678,7 @@ function renderDropCandidateCard(row) {
         <span><small>Lineup change</small><strong>${displaySignedNumber(row.fit.lineupDelta)} PPG</strong></span>
         <span><small>Depth change</small><strong>${displaySignedNumber(row.fit.depthDelta)}</strong></span>
       </div>
+      ${renderPlayerWeeklyDetailsDisclosure(league, row.playerId, { compact: true })}
     </article>`;
 }
 
@@ -2482,14 +2686,22 @@ function fillFreeAgencyControls() {
   const league = getSelectedLeague();
   const select = $('freeAgencyTeamSelect');
   if (!select) return;
-  fillRosterSelect(select, league);
+  const previous = select.value;
+  select.innerHTML = league
+    ? league.rosters.map(roster => `<option value="${roster.roster_id}">${escapeHtml(teamName(league, roster.roster_id))}</option>`).join('')
+    : '<option value="">No league loaded</option>';
+  if (previous && [...select.options].some(option => option.value === previous)) select.value = previous;
 }
 
 function fillLineupControls() {
   const league = getSelectedLeague();
   const select = $('lineupTeamSelect');
   if (!select) return;
-  fillRosterSelect(select, league);
+  const previous = select.value;
+  select.innerHTML = league
+    ? league.rosters.map(roster => `<option value="${roster.roster_id}">${escapeHtml(teamName(league, roster.roster_id))}</option>`).join('')
+    : '<option value="">No league loaded</option>';
+  if (previous && [...select.options].some(option => option.value === previous)) select.value = previous;
 }
 
 function renderFreeAgencyAnalyzer() {
@@ -2611,6 +2823,7 @@ function renderTradeTargetSuggestions() {
       <h4>${escapeHtml(row.value.name)}</h4>
       <p>${escapeHtml(row.player.team || 'FA')} · Value ${displayNumber(row.value.value, 0)} · ${displayNumber(row.value.forecastPpg)} forecast PPG</p>
       <div class="recommendation-badges">${tradeTargetReasonLabels(row).map(label => `<span class="badge">${escapeHtml(label)}</span>`).join('')}</div>
+      ${renderPlayerWeeklyDetailsDisclosure(league, row.playerId, { compact: true })}
       <button class="primary generate-offer-button" type="button" data-generate-offer="${escapeHtml(row.playerId)}" data-acquiring-side="${side}">Generate offer</button>
     </article>`).join('');
   output.querySelectorAll('[data-generate-offer]').forEach(button => {
@@ -2683,7 +2896,7 @@ function renderAssetList(side) {
     const sub = asset.type === 'player'
       ? `${playerPrimaryPosition(asset.playerId)} • value ${v.value} • ${v.forecastPpg} forecast PPG • ${v.confidence} confidence${dynastyContext ? ` • ${dynastyContext}` : ''}`
       : `${v.detail || 'Draft pick'} • value ${v.value}`;
-    return `<div class="asset-card"><div><strong>${escapeHtml(title)}</strong><small>${escapeHtml(sub)}</small></div><button class="ghost" data-side="${side}" data-idx="${idx}">Remove</button></div>`;
+    return `<div class="asset-card"><div><strong>${escapeHtml(title)}</strong><small>${escapeHtml(sub)}</small></div><button class="ghost" data-side="${side}" data-idx="${idx}">Remove</button>${asset.type === 'player' ? renderPlayerWeeklyDetailsDisclosure(league, asset.playerId, { compact: true }) : ''}</div>`;
   }).join('');
   el.querySelectorAll('button[data-side]').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -2903,7 +3116,7 @@ function renderPlayerStatCard(league, playerId) {
 
       <div class="player-card-pane" data-player-card-pane="gamelog">
         <p class="season-label">Game Log</p>
-        ${renderPlayerCardGameLog(league, data)}
+        <div data-player-card-game-log-body>${renderPlayerCardGameLog(league, data)}</div>
       </div>
     </article>`;
 }
@@ -2961,14 +3174,7 @@ function renderTradePlayerCard(league, playerId) {
         ${renderSeasonSnapshot(`${previous.season || currentSeasonNumber(league) - 1}`, previous)}
       </div>
 
-      <details class="season-details">
-        <summary>View ${current.season || league.season || currentSeasonNumber(league)} game log</summary>
-        ${renderRecordMiniLog(league, current)}
-      </details>
-      <details class="season-details">
-        <summary>View ${previous.season || currentSeasonNumber(league) - 1} game log</summary>
-        ${renderRecordMiniLog(league, previous)}
-      </details>
+      ${renderPlayerWeeklyDetailsDisclosure(league, playerId)}
     </article>`;
 }
 
@@ -3037,31 +3243,72 @@ function renderMiniGameLog(league, data) {
   }).join('')}</div>`;
 }
 
-function gameLogSeasonRecordsForPlayer(league, playerId) {
+function mergeSeasonRecordsForDisplay(league, playerId, historicalRec, leagueRec, season) {
+  if (!recordHasGames(historicalRec) && !recordHasGames(leagueRec)) return blankStatRecord(playerId, season);
+  const byWeek = new Map();
+  for (const row of historicalRec?.weeks || []) {
+    byWeek.set(Number(row.week), { ...row, season: Number(row.season || season), pointsSource: row.pointsSource || 'calculated' });
+  }
+  for (const leagueRow of leagueRec?.weeks || []) {
+    const key = Number(leagueRow.week);
+    const statsRow = byWeek.get(key) || {};
+    byWeek.set(key, {
+      ...statsRow,
+      ...leagueRow,
+      season: Number(leagueRow.season || statsRow.season || season),
+      stats: statsRow.stats || leagueRow.stats || null,
+      opponent: statsRow.opponent || leagueRow.opponent || '',
+      team: statsRow.team || leagueRow.team || '',
+      date: statsRow.date || leagueRow.date || '',
+      gameId: statsRow.gameId || leagueRow.gameId || '',
+      points: safeNumber(leagueRow.points, 0),
+      started: Boolean(leagueRow.started),
+      rosterId: leagueRow.rosterId ?? statsRow.rosterId ?? null,
+      pointsSource: 'league'
+    });
+  }
+
+  const merged = blankStatRecord(playerId, season);
+  [...byWeek.values()].sort((a, b) => Number(a.week) - Number(b.week)).forEach(row => addWeekToRecord(merged, row));
+  merged.source = recordHasGames(leagueRec) && recordHasGames(historicalRec)
+    ? 'league+historical'
+    : recordHasGames(leagueRec) ? 'league' : 'historical';
+  return finalizeStatRecord(merged);
+}
+
+function gameLogSeasonRecordsForPlayer(league, playerId, options = {}) {
   const pid = String(playerId);
-  const mode = $('playerStatsSeasonSelect')?.value || 'auto';
   const currentSeason = Number(league.season || currentSeasonNumber(league));
   const leagueRec = league.playerStats?.get(pid);
   const historical = league.historicalStats?.get(pid)?.seasons || {};
+  const mode = options.mode || (options.respectPlayerFilter === false ? 'auto' : ($('playerStatsSeasonSelect')?.value || 'auto'));
+  const limit = Number.isFinite(Number(options.limit)) ? Number(options.limit) : PLAYER_DETAIL_SEASON_LIMIT;
+
+  const recordForSeason = season => mergeSeasonRecordsForDisplay(
+    league,
+    pid,
+    historical[Number(season)] || null,
+    Number(season) === currentSeason ? leagueRec : null,
+    Number(season)
+  );
 
   if (mode === 'league') {
-    return recordHasGames(leagueRec) ? [leagueRec] : [];
+    const current = recordForSeason(currentSeason);
+    return recordHasGames(current) ? [current] : [];
   }
 
   if (mode !== 'auto') {
-    const selected = historical[Number(mode)] || (Number(mode) === currentSeason ? leagueRec : null);
+    const selected = recordForSeason(Number(mode));
     return recordHasGames(selected) ? [selected] : [];
   }
 
-  const bySeason = new Map();
-  Object.values(historical).forEach(rec => {
-    if (recordHasGames(rec)) bySeason.set(Number(rec.season), rec);
-  });
-  if (recordHasGames(leagueRec) && !bySeason.has(currentSeason)) bySeason.set(currentSeason, leagueRec);
-
-  return [...bySeason.values()]
-    .sort((a, b) => Number(b.season || currentSeason) - Number(a.season || currentSeason))
-    .slice(0, 3);
+  const seasons = new Set(Object.keys(historical).map(Number).filter(Boolean));
+  if (recordHasGames(leagueRec)) seasons.add(currentSeason);
+  return [...seasons]
+    .sort((a, b) => b - a)
+    .map(recordForSeason)
+    .filter(recordHasGames)
+    .slice(0, Math.max(1, limit));
 }
 
 function statLookup(row, keys = []) {
@@ -3074,6 +3321,7 @@ function statLookup(row, keys = []) {
 }
 
 function percentValue(raw) {
+  if (raw === null || raw === undefined || raw === '') return null;
   const num = Number(raw);
   if (!Number.isFinite(num)) return null;
   return Math.abs(num) <= 1 ? num * 100 : num;
@@ -3094,7 +3342,10 @@ function formatGameLogNumber(value, decimals = 0) {
 
 function gameLogWeekLabel(row) {
   const postMap = { 1: 'WC', 2: 'DIV', 3: 'CONF', 4: 'SB', 19: 'WC', 20: 'DIV', 21: 'CONF', 22: 'SB' };
-  if ((row?.seasonType || 'regular') === 'post') return postMap[Number(row.week)] || `P${row.week}`;
+  if ((row?.seasonType || 'regular') === 'post') {
+    if (Number(row.week) >= 19 || Number(row.week) <= 4) return postMap[Number(row.week)] || `P${row.week}`;
+    return String(row.week || '—');
+  }
   return String(row?.week || '—');
 }
 
@@ -3103,96 +3354,227 @@ function gameLogOpponent(row) {
   return opp ? String(opp).toUpperCase() : '—';
 }
 
-function gameLogSectionsForPosition(position) {
+function gameLogScorePart(statKeys, scoringKeys, options = {}) {
+  return { statKeys, scoringKeys, ...options };
+}
+
+function firstScoringValue(scoring, keys = []) {
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(scoring || {}, key) && Number.isFinite(Number(scoring[key]))) {
+      return { key, value: Number(scoring[key]) };
+    }
+  }
+  return null;
+}
+
+function scorePartUnits(row, part, position) {
+  if (part.positions && !part.positions.includes(position)) return null;
+  if (typeof part.calc === 'function') return part.calc(row, position);
+  const explicit = statLookup(row, part.statKeys || []);
+  if (explicit !== null && explicit !== undefined && explicit !== '') return safeNumber(explicit, 0);
+  if (part.threshold) {
+    const thresholdValue = safeNumber(statLookup(row, part.thresholdStatKeys || []), 0);
+    return thresholdValue >= part.threshold ? 1 : 0;
+  }
+  if (part.fallbackStatKeys) return safeNumber(statLookup(row, part.fallbackStatKeys), 0);
+  return null;
+}
+
+function columnScoringWeight(league, col, position) {
+  const scoring = league?.scoring_settings || {};
+  let positive = 0;
+  let negative = 0;
+  for (const part of col.scoreParts || []) {
+    if (part.positions && !part.positions.includes(position)) continue;
+    const rule = firstScoringValue(scoring, part.scoringKeys || []);
+    if (!rule || !rule.value) continue;
+    if (rule.value > 0) positive += rule.value;
+    else negative += Math.abs(rule.value);
+  }
+  if (positive) return positive + safeNumber(col.priorityBoost, 0);
+  if (negative) return negative * 0.35 + safeNumber(col.priorityBoost, 0);
+  return safeNumber(col.priorityBoost, 0);
+}
+
+function sortedNotableColumns(league, position, columns) {
+  return columns.slice().sort((a, b) => {
+    const weightDiff = columnScoringWeight(league, b, position) - columnScoringWeight(league, a, position);
+    return Math.abs(weightDiff) > 0.0001 ? weightDiff : safeNumber(a.order, 99) - safeNumber(b.order, 99);
+  });
+}
+
+function snapCountForRow(row, position) {
+  if (['DL', 'LB', 'DB'].includes(position)) return statLookup(row, ['def_snp', 'def_snaps', 'snap_count']);
+  if (position === 'K') return statLookup(row, ['st_snp', 'special_teams_snaps', 'snap_count']);
+  if (position === 'DEF') return statLookup(row, ['tm_def_snp', 'def_snp', 'snap_count']);
+  return statLookup(row, ['off_snp', 'off_snaps', 'snap_count']);
+}
+
+function snapPercentForRow(row, position) {
+  const directKeys = ['DL', 'LB', 'DB'].includes(position)
+    ? ['def_snp_pct', 'snap_pct', 'snp_pct']
+    : position === 'K'
+      ? ['st_snp_pct', 'snap_pct', 'snp_pct']
+      : ['off_snp_pct', 'snap_pct', 'off_snap_pct', 'snp_pct'];
+  const direct = percentValue(statLookup(row, directKeys));
+  if (Number.isFinite(direct)) return direct;
+  const snaps = safeNumber(snapCountForRow(row, position), 0);
+  const teamSnaps = position === 'K'
+    ? safeNumber(statLookup(row, ['tm_st_snp', 'team_st_snaps']), 0)
+    : ['DL', 'LB', 'DB', 'DEF'].includes(position)
+      ? safeNumber(statLookup(row, ['tm_def_snp', 'team_def_snaps']), 0)
+      : safeNumber(statLookup(row, ['tm_off_snp', 'team_off_snaps']), 0);
+  return teamSnaps ? (snaps / teamSnaps) * 100 : null;
+}
+
+function gameLogSectionsForPosition(position, league) {
+  const fantasy = [
+    { label: 'FPTS', type: 'fpts' },
+    { label: 'ROST%', type: 'ownership_owned' },
+    { label: 'START%', type: 'ownership_started' },
+    { label: 'SNP%', type: 'snap_pct', good: 85, ok: 60 },
+    { label: 'SNAP', type: 'snap_count', good: 60, ok: 35 },
+    { label: 'LG ROLE', type: 'league_role' }
+  ];
+  let notable = [];
+
   if (position === 'QB') {
-    return [
-      { label: 'Fantasy', cols: [
-        { label: 'FPTS', type: 'fpts' },
-        { label: 'SNP%', type: 'pct', keys: ['off_snp_pct', 'snap_pct', 'off_snap_pct', 'snp_pct'], good: 85, ok: 65 },
-        { label: 'RANK', type: 'rank' }
+    notable = [
+      { label: 'PASS TD', type: 'td', keys: ['pass_td', 'pass_touchdowns'], order: 1, scoreParts: [
+        gameLogScorePart(['pass_td', 'pass_touchdowns'], ['pass_td']),
+        gameLogScorePart(['pass_td_40p'], ['pass_td_40p']),
+        gameLogScorePart(['pass_td_50p'], ['pass_td_50p'])
       ]},
-      { label: 'Passing', cols: [
-        { label: 'ATT', type: 'count', keys: ['pass_att', 'pass_attempts'], good: 34, ok: 24 },
-        { label: 'CMP', type: 'count', keys: ['pass_cmp', 'pass_completions'], good: 24, ok: 18 },
-        { label: 'YD', type: 'yards', keys: ['pass_yd', 'pass_yards'], good: 275, ok: 210 },
-        { label: 'TD', type: 'td', keys: ['pass_td', 'pass_touchdowns'] },
-        { label: 'INT', type: 'inverse', keys: ['pass_int', 'interceptions_thrown'], good: 0, ok: 1 }
+      { label: 'RUSH TD', type: 'td', keys: ['rush_td', 'rushing_touchdowns'], order: 2, scoreParts: [
+        gameLogScorePart(['rush_td', 'rushing_touchdowns'], ['rush_td']),
+        gameLogScorePart(['rush_td_40p'], ['rush_td_40p']),
+        gameLogScorePart(['rush_td_50p'], ['rush_td_50p'])
       ]},
-      { label: 'Rushing', cols: [
-        { label: 'ATT', type: 'count', keys: ['rush_att', 'rushing_attempts'], good: 6, ok: 3 },
-        { label: 'YD', type: 'yards', keys: ['rush_yd', 'rushing_yards'], good: 35, ok: 15 },
-        { label: 'YPC', type: 'rate', calc: row => ratioValue(row, ['rush_yd', 'rushing_yards'], ['rush_att', 'rushing_attempts']), good: 5, ok: 3.5, decimals: 2 },
-        { label: 'TD', type: 'td', keys: ['rush_td', 'rushing_touchdowns'] }
-      ]}
+      { label: '2PT', type: 'count', order: 3, calc: row => safeNumber(statLookup(row, ['pass_2pt']), 0) + safeNumber(statLookup(row, ['rush_2pt']), 0), scoreParts: [
+        gameLogScorePart(['pass_2pt'], ['pass_2pt']), gameLogScorePart(['rush_2pt'], ['rush_2pt'])
+      ]},
+      { label: 'PASS YD', type: 'yards', keys: ['pass_yd', 'pass_yards'], order: 4, good: 275, ok: 210, scoreParts: [
+        gameLogScorePart(['pass_yd', 'pass_yards'], ['pass_yd']),
+        gameLogScorePart(['bonus_pass_yd_300'], ['bonus_pass_yd_300'], { threshold: 300, thresholdStatKeys: ['pass_yd', 'pass_yards'] }),
+        gameLogScorePart(['bonus_pass_yd_400'], ['bonus_pass_yd_400'], { threshold: 400, thresholdStatKeys: ['pass_yd', 'pass_yards'] })
+      ]},
+      { label: 'RUSH YD', type: 'yards', keys: ['rush_yd', 'rushing_yards'], order: 5, good: 40, ok: 15, scoreParts: [
+        gameLogScorePart(['rush_yd', 'rushing_yards'], ['rush_yd']),
+        gameLogScorePart(['bonus_rush_yd_100'], ['bonus_rush_yd_100'], { threshold: 100, thresholdStatKeys: ['rush_yd', 'rushing_yards'] })
+      ]},
+      { label: 'PASS FD', type: 'count', keys: ['pass_fd'], order: 6, scoreParts: [gameLogScorePart(['pass_fd'], ['pass_fd'])] },
+      { label: 'RUSH FD', type: 'count', keys: ['rush_fd'], order: 7, scoreParts: [gameLogScorePart(['rush_fd'], ['rush_fd'])] },
+      { label: 'CMP', type: 'count', keys: ['pass_cmp', 'pass_completions'], order: 8, good: 24, ok: 18, scoreParts: [gameLogScorePart(['pass_cmp', 'pass_completions'], ['pass_cmp'])] },
+      { label: 'INT', type: 'inverse', keys: ['pass_int', 'interceptions_thrown'], order: 9, good: 0, ok: 1, scoreParts: [gameLogScorePart(['pass_int', 'interceptions_thrown'], ['pass_int'])] },
+      { label: 'ATT', type: 'count', keys: ['pass_att', 'pass_attempts'], order: 10, good: 34, ok: 24 }
     ];
-  }
-
-  if (position === 'K') {
-    return [
-      { label: 'Fantasy', cols: [
-        { label: 'FPTS', type: 'fpts' },
-        { label: 'RANK', type: 'rank' }
+  } else if (['RB', 'WR', 'TE'].includes(position)) {
+    notable = [
+      { label: 'REC TD', type: 'td', keys: ['rec_td', 'receiving_touchdowns'], order: 1, scoreParts: [
+        gameLogScorePart(['rec_td', 'receiving_touchdowns'], ['rec_td']),
+        gameLogScorePart(['rec_td_40p'], ['rec_td_40p']),
+        gameLogScorePart(['rec_td_50p'], ['rec_td_50p'])
       ]},
-      { label: 'Kicking', cols: [
-        { label: 'FGM', type: 'count', keys: ['fgm', 'fg_made'], good: 3, ok: 2 },
-        { label: 'FGA', type: 'count', keys: ['fga', 'fg_att'], good: 4, ok: 2 },
-        { label: 'XPM', type: 'count', keys: ['xpm', 'xp_made'], good: 3, ok: 1 },
-        { label: 'XPA', type: 'count', keys: ['xpa', 'xp_att'], good: 4, ok: 2 }
-      ]}
+      { label: 'RUSH TD', type: 'td', keys: ['rush_td', 'rushing_touchdowns'], order: 2, scoreParts: [
+        gameLogScorePart(['rush_td', 'rushing_touchdowns'], ['rush_td']),
+        gameLogScorePart(['rush_td_40p'], ['rush_td_40p']),
+        gameLogScorePart(['rush_td_50p'], ['rush_td_50p'])
+      ]},
+      { label: '2PT', type: 'count', order: 3, calc: row => safeNumber(statLookup(row, ['rec_2pt']), 0) + safeNumber(statLookup(row, ['rush_2pt']), 0), scoreParts: [
+        gameLogScorePart(['rec_2pt'], ['rec_2pt']), gameLogScorePart(['rush_2pt'], ['rush_2pt'])
+      ]},
+      { label: 'REC', type: 'count', keys: ['rec', 'receptions'], order: 4, good: 6, ok: 3, scoreParts: [
+        gameLogScorePart(['rec', 'receptions'], ['rec']),
+        gameLogScorePart(['bonus_rec_te'], ['bonus_rec_te', 'rec_te'], { fallbackStatKeys: ['rec', 'receptions'], positions: ['TE'] })
+      ]},
+      { label: 'REC YD', type: 'yards', keys: ['rec_yd', 'receiving_yards'], order: 5, good: 80, ok: 40, scoreParts: [
+        gameLogScorePart(['rec_yd', 'receiving_yards'], ['rec_yd']),
+        gameLogScorePart(['bonus_rec_yd_100'], ['bonus_rec_yd_100'], { threshold: 100, thresholdStatKeys: ['rec_yd', 'receiving_yards'] }),
+        gameLogScorePart(['bonus_rec_yd_200'], ['bonus_rec_yd_200'], { threshold: 200, thresholdStatKeys: ['rec_yd', 'receiving_yards'] })
+      ]},
+      { label: 'RUSH YD', type: 'yards', keys: ['rush_yd', 'rushing_yards'], order: 6, good: 80, ok: 35, scoreParts: [
+        gameLogScorePart(['rush_yd', 'rushing_yards'], ['rush_yd']),
+        gameLogScorePart(['bonus_rush_yd_100'], ['bonus_rush_yd_100'], { threshold: 100, thresholdStatKeys: ['rush_yd', 'rushing_yards'] }),
+        gameLogScorePart(['bonus_rush_yd_200'], ['bonus_rush_yd_200'], { threshold: 200, thresholdStatKeys: ['rush_yd', 'rushing_yards'] })
+      ]},
+      { label: 'REC FD', type: 'count', keys: ['rec_fd'], order: 7, scoreParts: [gameLogScorePart(['rec_fd'], ['rec_fd'])] },
+      { label: 'RUSH FD', type: 'count', keys: ['rush_fd'], order: 8, scoreParts: [gameLogScorePart(['rush_fd'], ['rush_fd'])] },
+      { label: 'FUM LST', type: 'inverse', keys: ['fum_lost'], order: 9, scoreParts: [gameLogScorePart(['fum_lost'], ['fum_lost'])] },
+      { label: 'TGT', type: 'count', keys: ['rec_tgt', 'targets'], order: 10, good: 8, ok: 4 },
+      { label: 'CAR', type: 'count', keys: ['rush_att', 'rushing_attempts'], order: 11, good: 14, ok: 6 }
     ];
-  }
-
-  if (position === 'DEF') {
-    return [
-      { label: 'Fantasy', cols: [
-        { label: 'FPTS', type: 'fpts' },
-        { label: 'RANK', type: 'rank' }
+  } else if (['DL', 'LB', 'DB'].includes(position)) {
+    notable = [
+      { label: 'DEF TD', type: 'td', keys: ['idp_def_td', 'def_td'], order: 1, scoreParts: [gameLogScorePart(['idp_def_td', 'def_td'], ['idp_def_td'])] },
+      { label: 'SAFE', type: 'count', keys: ['idp_safe', 'safe'], order: 2, scoreParts: [gameLogScorePart(['idp_safe', 'safe'], ['idp_safe'])] },
+      { label: 'SACK', type: 'count', keys: ['idp_sack', 'sack', 'sacks'], order: 3, good: 1, ok: 0.5, scoreParts: [
+        gameLogScorePart(['idp_sack', 'sack', 'sacks'], ['idp_sack']),
+        gameLogScorePart(['bonus_sack_2p'], ['bonus_sack_2p'], { threshold: 2, thresholdStatKeys: ['idp_sack', 'sack', 'sacks'] })
       ]},
-      { label: 'Defense', cols: [
-        { label: 'SACK', type: 'count', keys: ['sack', 'sacks'], good: 4, ok: 2 },
-        { label: 'INT', type: 'count', keys: ['int', 'def_int'], good: 2, ok: 1 },
-        { label: 'FR', type: 'count', keys: ['fum_rec', 'fumble_recoveries'], good: 1, ok: 1 },
-        { label: 'PA', type: 'inverse', keys: ['pts_allow', 'points_allowed'], good: 10, ok: 20 }
-      ]}
+      { label: 'INT', type: 'count', keys: ['idp_int', 'int', 'interceptions'], order: 4, scoreParts: [
+        gameLogScorePart(['idp_int', 'int', 'interceptions'], ['idp_int']),
+        gameLogScorePart(['idp_int_ret_yd', 'int_ret_yd'], ['idp_int_ret_yd'])
+      ]},
+      { label: 'FF', type: 'count', keys: ['idp_ff', 'ff', 'forced_fumbles'], order: 5, scoreParts: [gameLogScorePart(['idp_ff', 'ff', 'forced_fumbles'], ['idp_ff'])] },
+      { label: 'FR', type: 'count', keys: ['idp_fum_rec', 'fum_rec', 'fumble_recoveries'], order: 6, scoreParts: [
+        gameLogScorePart(['idp_fum_rec', 'fum_rec', 'fumble_recoveries'], ['idp_fum_rec']),
+        gameLogScorePart(['idp_fum_ret_yd', 'fum_ret_yd'], ['idp_fum_ret_yd'])
+      ]},
+      { label: 'PD', type: 'count', keys: ['idp_pass_def', 'pass_def', 'passes_defended'], order: 7, good: 2, ok: 1, scoreParts: [
+        gameLogScorePart(['idp_pass_def', 'pass_def', 'passes_defended'], ['idp_pass_def']),
+        gameLogScorePart(['idp_pass_def_3p'], ['idp_pass_def_3p'], { threshold: 3, thresholdStatKeys: ['idp_pass_def', 'pass_def', 'passes_defended'] })
+      ]},
+      { label: 'BLK', type: 'count', keys: ['idp_blk_kick', 'blk_kick'], order: 8, scoreParts: [gameLogScorePart(['idp_blk_kick', 'blk_kick'], ['idp_blk_kick'])] },
+      { label: 'TKL', type: 'count', order: 9, good: 8, ok: 5, calc: row => {
+        const total = statLookup(row, ['idp_tkl', 'tkl', 'tackles']);
+        if (total !== null && total !== undefined) return total;
+        return safeNumber(statLookup(row, ['idp_tkl_solo', 'tkl_solo']), 0) + safeNumber(statLookup(row, ['idp_tkl_ast', 'tkl_ast']), 0);
+      }, scoreParts: [
+        gameLogScorePart(['idp_tkl', 'tkl', 'tackles'], ['idp_tkl']),
+        gameLogScorePart(['idp_tkl_solo', 'tkl_solo'], ['idp_tkl_solo']),
+        gameLogScorePart(['idp_tkl_ast', 'tkl_ast'], ['idp_tkl_ast']),
+        gameLogScorePart(['bonus_tkl_10p'], ['bonus_tkl_10p'], { threshold: 10, thresholdStatKeys: ['idp_tkl', 'tkl', 'tackles'] })
+      ]},
+      { label: 'TFL', type: 'count', keys: ['idp_tkl_loss', 'tkl_loss'], order: 10, scoreParts: [gameLogScorePart(['idp_tkl_loss', 'tkl_loss'], ['idp_tkl_loss'])] },
+      { label: 'QHIT', type: 'count', keys: ['idp_qb_hit', 'qb_hit'], order: 11, scoreParts: [gameLogScorePart(['idp_qb_hit', 'qb_hit'], ['idp_qb_hit'])] }
     ];
-  }
-
-  if (['DL', 'LB', 'DB'].includes(position)) {
-    return [
-      { label: 'Fantasy', cols: [
-        { label: 'FPTS', type: 'fpts' },
-        { label: 'SNP%', type: 'pct', keys: ['def_snp_pct', 'snap_pct', 'snp_pct'], good: 85, ok: 65 },
-        { label: 'RANK', type: 'rank' }
+  } else if (position === 'K') {
+    notable = [
+      { label: 'FG 50+', type: 'count', keys: ['fgm_50p', 'fgm_50_59'], order: 1, scoreParts: [gameLogScorePart(['fgm_50p', 'fgm_50_59'], ['fgm_50p'])] },
+      { label: 'FG 40-49', type: 'count', keys: ['fgm_40_49'], order: 2, scoreParts: [gameLogScorePart(['fgm_40_49'], ['fgm_40_49'])] },
+      { label: 'FG 30-39', type: 'count', keys: ['fgm_30_39'], order: 3, scoreParts: [gameLogScorePart(['fgm_30_39'], ['fgm_30_39'])] },
+      { label: 'FG 20-29', type: 'count', keys: ['fgm_20_29'], order: 4, scoreParts: [gameLogScorePart(['fgm_20_29'], ['fgm_20_29'])] },
+      { label: 'FG 0-19', type: 'count', keys: ['fgm_0_19'], order: 5, scoreParts: [gameLogScorePart(['fgm_0_19'], ['fgm_0_19'])] },
+      { label: 'XPM', type: 'count', keys: ['xpm', 'xp_made'], order: 6, good: 3, ok: 1, scoreParts: [gameLogScorePart(['xpm', 'xp_made'], ['xpm'])] },
+      { label: 'FG MISS', type: 'inverse', order: 7, calc: row => Math.max(0, safeNumber(statLookup(row, ['fga', 'fg_att']), 0) - safeNumber(statLookup(row, ['fgm', 'fg_made']), 0)), scoreParts: [
+        gameLogScorePart([], ['fgmiss'], { calc: row => Math.max(0, safeNumber(statLookup(row, ['fga', 'fg_att']), 0) - safeNumber(statLookup(row, ['fgm', 'fg_made']), 0)) })
       ]},
-      { label: 'Defense', cols: [
-        { label: 'TCK', type: 'count', keys: ['tkl', 'tackles', 'tackles_solo'], good: 8, ok: 5 },
-        { label: 'AST', type: 'count', keys: ['ast', 'assists'], good: 3, ok: 1 },
-        { label: 'SACK', type: 'count', keys: ['sack', 'sacks'], good: 1, ok: 0.5 },
-        { label: 'INT', type: 'count', keys: ['int', 'interceptions'], good: 1, ok: 0.5 },
-        { label: 'PD', type: 'count', keys: ['pass_def', 'passes_defended'], good: 2, ok: 1 }
-      ]}
+      { label: 'FGM', type: 'count', keys: ['fgm', 'fg_made'], order: 8, good: 3, ok: 2, scoreParts: [gameLogScorePart(['fgm', 'fg_made'], ['fgm'])] },
+      { label: 'FGA', type: 'count', keys: ['fga', 'fg_att'], order: 9, good: 4, ok: 2 }
+    ];
+  } else if (position === 'DEF') {
+    const pointAllowedParts = ['pts_allow_0', 'pts_allow_1_6', 'pts_allow_7_13', 'pts_allow_14_20', 'pts_allow_21_27', 'pts_allow_28_34', 'pts_allow_35p']
+      .map(key => gameLogScorePart([key], [key]));
+    const yardAllowedParts = ['yds_allow_0_100', 'yds_allow_100_199', 'yds_allow_200_299', 'yds_allow_300_349', 'yds_allow_350_399', 'yds_allow_400_449', 'yds_allow_450_499', 'yds_allow_500_549', 'yds_allow_550p']
+      .map(key => gameLogScorePart([key], [key]));
+    notable = [
+      { label: 'DEF TD', type: 'td', keys: ['td', 'def_td'], order: 1, scoreParts: [gameLogScorePart(['td', 'def_td'], ['def_td'])] },
+      { label: 'ST TD', type: 'td', order: 2, calc: row => safeNumber(statLookup(row, ['def_st_td']), 0) + safeNumber(statLookup(row, ['def_kr_td']), 0) + safeNumber(statLookup(row, ['def_pr_td']), 0), scoreParts: [
+        gameLogScorePart(['def_st_td'], ['def_st_td']), gameLogScorePart(['def_kr_td'], ['def_kr_td']), gameLogScorePart(['def_pr_td'], ['def_pr_td'])
+      ]},
+      { label: 'SAFE', type: 'count', keys: ['safe', 'safety'], order: 3, scoreParts: [gameLogScorePart(['safe', 'safety'], ['safe'])] },
+      { label: 'INT', type: 'count', keys: ['int', 'def_int'], order: 4, good: 2, ok: 1, scoreParts: [gameLogScorePart(['int', 'def_int'], ['int'])] },
+      { label: 'FR', type: 'count', keys: ['fum_rec', 'fumble_recoveries'], order: 5, scoreParts: [gameLogScorePart(['fum_rec', 'fumble_recoveries'], ['fum_rec'])] },
+      { label: 'BLK', type: 'count', keys: ['blk_kick'], order: 6, scoreParts: [gameLogScorePart(['blk_kick'], ['blk_kick'])] },
+      { label: 'SACK', type: 'count', keys: ['sack', 'sacks'], order: 7, good: 4, ok: 2, scoreParts: [gameLogScorePart(['sack', 'sacks'], ['sack'])] },
+      { label: 'PA', type: 'inverse', keys: ['pts_allow', 'points_allowed'], order: 8, good: 10, ok: 20, scoreParts: pointAllowedParts },
+      { label: 'YA', type: 'inverse', keys: ['yds_allow', 'yards_allowed'], order: 9, good: 299, ok: 399, scoreParts: yardAllowedParts }
     ];
   }
 
   return [
-    { label: 'Fantasy', cols: [
-      { label: 'FPTS', type: 'fpts' },
-      { label: 'SNP%', type: 'pct', keys: ['off_snp_pct', 'snap_pct', 'off_snap_pct', 'snp_pct'], good: 85, ok: 60 },
-      { label: 'RANK', type: 'rank' }
-    ]},
-    { label: 'Rushing', cols: [
-      { label: 'ATT', type: 'count', keys: ['rush_att', 'rushing_attempts'], good: 14, ok: 6 },
-      { label: 'YD', type: 'yards', keys: ['rush_yd', 'rushing_yards'], good: 80, ok: 35 },
-      { label: 'YPC', type: 'rate', calc: row => ratioValue(row, ['rush_yd', 'rushing_yards'], ['rush_att', 'rushing_attempts']), good: 4.8, ok: 3.7, decimals: 2 },
-      { label: 'TD', type: 'td', keys: ['rush_td', 'rushing_touchdowns'] }
-    ]},
-    { label: 'Receiving', cols: [
-      { label: 'TAR', type: 'count', keys: ['rec_tgt', 'targets'], good: 8, ok: 4 },
-      { label: 'REC', type: 'count', keys: ['rec', 'receptions'], good: 6, ok: 3 },
-      { label: 'YD', type: 'yards', keys: ['rec_yd', 'receiving_yards'], good: 80, ok: 40 },
-      { label: 'AVG', type: 'rate', calc: row => ratioValue(row, ['rec_yd', 'receiving_yards'], ['rec', 'receptions']), good: 13, ok: 8, decimals: 1 },
-      { label: 'TD', type: 'td', keys: ['rec_td', 'receiving_touchdowns'] }
-    ]}
+    { label: 'Fantasy / Usage', cols: fantasy },
+    { label: 'Notable Stats · points first', cols: sortedNotableColumns(league, position, notable) }
   ];
 }
 
@@ -3228,15 +3610,42 @@ function gameLogMetricValue(league, playerId, row, col, position) {
   if (col.type === 'fpts') return safeNumber(row.points, 0);
   if (col.type === 'rank') return weekRankForRow(league, playerId, row, position);
   if (col.type === 'pct') return percentValue(statLookup(row, col.keys || []));
+  if (col.type === 'ownership_owned') return ownershipForPlayerWeek(league, playerId, row)?.owned ?? null;
+  if (col.type === 'ownership_started') return ownershipForPlayerWeek(league, playerId, row)?.started ?? null;
+  if (col.type === 'snap_pct') return snapPercentForRow(row, position);
+  if (col.type === 'snap_count') return snapCountForRow(row, position);
+  if (col.type === 'league_role') return row.rosterId ? (row.started ? 'START' : 'BENCH') : null;
   if (typeof col.calc === 'function') return col.calc(row, league, playerId, position);
   return statLookup(row, col.keys || []);
+}
+
+function gameLogMetricPoints(league, row, col, position) {
+  const scoring = league?.scoring_settings || {};
+  let total = 0;
+  let hasRule = false;
+  for (const part of col.scoreParts || []) {
+    const rule = firstScoringValue(scoring, part.scoringKeys || []);
+    if (!rule || (part.positions && !part.positions.includes(position))) continue;
+    hasRule = true;
+    const units = scorePartUnits(row, part, position);
+    if (units === null || units === undefined || !Number.isFinite(Number(units))) continue;
+    total += Number(units) * rule.value;
+  }
+  return hasRule ? roundNum(total, 2) : null;
+}
+
+function formatPointContribution(value) {
+  const number = safeNumber(value, 0);
+  if (Math.abs(number - Math.round(number)) < 0.001) return String(Math.round(number));
+  return displayNumber(number, 2);
 }
 
 function gameLogMetricText(league, playerId, row, col, position) {
   const value = gameLogMetricValue(league, playerId, row, col, position);
   if (value === null || value === undefined || value === '') return '—';
   if (col.type === 'fpts') return roundNum(value, 2).toFixed(2);
-  if (col.type === 'pct') return formatGameLogNumber(value, 0);
+  if (['pct', 'ownership_owned', 'ownership_started', 'snap_pct'].includes(col.type)) return `${formatGameLogNumber(value, 1)}%`;
+  if (col.type === 'league_role') return String(value);
   if (col.type === 'rate') return formatGameLogNumber(value, col.decimals ?? 2);
   if (col.type === 'rank') return value ? String(value) : '—';
   if (Math.abs(Number(value) - Math.round(Number(value))) > 0.001) return formatGameLogNumber(value, col.decimals ?? 1);
@@ -3244,6 +3653,7 @@ function gameLogMetricText(league, playerId, row, col, position) {
 }
 
 function gameLogToneClass(league, playerId, row, col, position) {
+  if (col.type === 'league_role') return row.rosterId && row.started ? 'tone-good' : 'tone-neutral';
   const value = Number(gameLogMetricValue(league, playerId, row, col, position));
   if (!Number.isFinite(value)) return 'tone-neutral';
   const pos = position || playerPrimaryPosition(playerId);
@@ -3256,6 +3666,9 @@ function gameLogToneClass(league, playerId, row, col, position) {
     else if (['DL', 'LB', 'DB'].includes(pos)) { good = 15; ok = 8; }
     else { good = 18; ok = 10; }
   }
+  if (col.type === 'ownership_owned') { good = 75; ok = 35; }
+  if (col.type === 'ownership_started') { good = 50; ok = 15; }
+  if (col.type === 'snap_pct') { good = 80; ok = 55; }
   if (col.type === 'rank') {
     if (value <= 12) return 'tone-good';
     if (value <= 24) return 'tone-ok';
@@ -3276,7 +3689,7 @@ function gameLogToneClass(league, playerId, row, col, position) {
   return value > 0 ? 'tone-bad' : 'tone-neutral';
 }
 
-function renderFallbackGameLogTable(league, rows, label) {
+function renderFallbackGameLogTable(league, playerId, rows, label, position) {
   const ordered = rows.slice().sort((a, b) => Number(a.week) - Number(b.week));
   return `
     <div class="sleeper-log-section">
@@ -3284,14 +3697,17 @@ function renderFallbackGameLogTable(league, rows, label) {
       <div class="sleeper-log-scroll">
         <table class="sleeper-log-table compact-fallback">
           <thead>
-            <tr><th>WK</th><th>TEAM</th><th>FPTS</th><th>USED</th></tr>
+            <tr><th>WK</th><th>TEAM</th><th>FPTS</th><th>ROST%</th><th>START%</th><th>SNP%</th><th>SNAP</th><th>LG ROLE</th></tr>
           </thead>
           <tbody>
             ${ordered.map(row => `<tr>
               <td class="wk-cell">${escapeHtml(gameLogWeekLabel(row))}</td>
               <td>${escapeHtml(row.rosterId ? teamName(league, row.rosterId) : 'NFL')}</td>
               <td class="log-cell ${gameLogToneClass(league, '', row, { type: 'fpts' }, '')}">${roundNum(row.points, 2).toFixed(2)}</td>
-              <td>${row.started ? 'Start' : 'Bench'}</td>
+              ${['ownership_owned', 'ownership_started', 'snap_pct', 'snap_count', 'league_role'].map(type => {
+                const col = { type };
+                return `<td class="log-cell ${gameLogToneClass(league, playerId, row, col, position)}">${escapeHtml(gameLogMetricText(league, playerId, row, col, position))}</td>`;
+              }).join('')}
             </tr>`).join('')}
           </tbody>
         </table>
@@ -3300,7 +3716,7 @@ function renderFallbackGameLogTable(league, rows, label) {
 }
 
 function renderDetailedGameLogTable(league, playerId, rows, label, position) {
-  const sections = gameLogSectionsForPosition(position);
+  const sections = gameLogSectionsForPosition(position, league);
   const ordered = rows.slice().sort((a, b) => Number(a.week) - Number(b.week));
   const secondHeader = sections.flatMap(section => section.cols.map(col => `<th>${escapeHtml(col.label)}</th>`)).join('');
   return `
@@ -3323,12 +3739,19 @@ function renderDetailedGameLogTable(league, playerId, rows, label, position) {
               ${sections.flatMap(section => section.cols.map(col => {
                 const text = gameLogMetricText(league, playerId, row, col, position);
                 const tone = gameLogToneClass(league, playerId, row, col, position);
-                return `<td class="log-cell ${tone}">${escapeHtml(text)}</td>`;
+                const points = gameLogMetricPoints(league, row, col, position);
+                const pointsMeta = points !== null && text !== '—'
+                  ? `<small class="stat-points">${escapeHtml(formatPointContribution(points))} pts*</small>`
+                  : col.type === 'fpts'
+                    ? `<small class="stat-source">${row.pointsSource === 'league' ? 'league' : 'rescored'}</small>`
+                    : '';
+                return `<td class="log-cell ${tone}"><span class="stat-raw">${escapeHtml(text)}</span>${pointsMeta}</td>`;
               })).join('')}
             </tr>`).join('')}
           </tbody>
         </table>
       </div>
+      <p class="game-log-footnote">* Point contribution uses this league’s scoring and includes any earned bonuses. “League” FPTS comes directly from Sleeper matchup scoring; “rescored” FPTS applies these rules to Sleeper’s stat line.</p>
     </div>`;
 }
 
@@ -3341,8 +3764,8 @@ function renderGameLogSeasonBlock(league, playerId, rec, position) {
   return `
     <section class="sleeper-season-block">
       <h4>${escapeHtml(String(rec.season || currentSeasonNumber(league)))}</h4>
-      ${post.length ? (detailed ? renderDetailedGameLogTable(league, playerId, post, 'Playoffs', position) : renderFallbackGameLogTable(league, post, 'Playoffs')) : ''}
-      ${regular.length ? (detailed ? renderDetailedGameLogTable(league, playerId, regular, 'Regular Season', position) : renderFallbackGameLogTable(league, regular, 'Regular Season')) : ''}
+      ${post.length ? (detailed ? renderDetailedGameLogTable(league, playerId, post, 'Playoffs', position) : renderFallbackGameLogTable(league, playerId, post, 'Playoffs', position)) : ''}
+      ${regular.length ? (detailed ? renderDetailedGameLogTable(league, playerId, regular, 'Regular Season', position) : renderFallbackGameLogTable(league, playerId, regular, 'Regular Season', position)) : ''}
     </section>`;
 }
 
@@ -3351,6 +3774,123 @@ function renderPlayerCardGameLog(league, data) {
   if (!seasonRecords.length) return '<div class="mini-log"><p class="empty">No game-log rows found for this player.</p></div>';
   const position = data?.position || playerPrimaryPosition(data?.playerId);
   return `<div class="sleeper-game-log full-game-log">${seasonRecords.map(rec => renderGameLogSeasonBlock(league, data.playerId, rec, position)).join('')}</div>`;
+}
+
+function disclosureGameLogRecords(league, playerId) {
+  return gameLogSeasonRecordsForPlayer(league, playerId, {
+    mode: 'auto',
+    respectPlayerFilter: false,
+    limit: PLAYER_DETAIL_SEASON_LIMIT
+  });
+}
+
+function renderPlayerWeeklyUsageSummary(league, playerId, records, position) {
+  const orderedRows = records.flatMap(rec => rec.weeks || [])
+    .sort((a, b) => Number(b.season || 0) - Number(a.season || 0) || Number(b.week) - Number(a.week));
+  const ownershipRow = orderedRows.find(row => ownershipForPlayerWeek(league, playerId, row));
+  const ownership = ownershipRow ? ownershipForPlayerWeek(league, playerId, ownershipRow) : null;
+  const latestRecord = records[0] || null;
+  const snapRows = (latestRecord?.weeks || [])
+    .map(row => snapPercentForRow(row, position))
+    .filter(Number.isFinite);
+  const averageSnap = snapRows.length ? snapRows.reduce((sum, value) => sum + value, 0) / snapRows.length : null;
+  const ownershipPeriod = ownershipRow ? `${ownershipRow.season} W${ownershipRow.week}` : 'No ownership row';
+  const leagueTypeLabel = isDynastyLeague(league) ? 'Sleeper dynasty' : 'Sleeper redraft';
+  return `
+    <div class="weekly-usage-summary">
+      <div><span>Rostered</span><strong>${Number.isFinite(ownership?.owned) ? `${formatGameLogNumber(ownership.owned, 1)}%` : '—'}</strong><small>${escapeHtml(leagueTypeLabel)} · ${escapeHtml(ownershipPeriod)}</small></div>
+      <div><span>Started</span><strong>${Number.isFinite(ownership?.started) ? `${formatGameLogNumber(ownership.started, 1)}%` : '—'}</strong><small>${escapeHtml(leagueTypeLabel)} · ${escapeHtml(ownershipPeriod)}</small></div>
+      <div><span>Avg snap share</span><strong>${Number.isFinite(averageSnap) ? `${formatGameLogNumber(averageSnap, 1)}%` : '—'}</strong><small>${latestRecord?.season ? `${escapeHtml(String(latestRecord.season))} games` : 'No snap data'}</small></div>
+      <div><span>League PPG</span><strong>${latestRecord ? displayNumber(latestRecord.ppg, 2) : '—'}</strong><small>${latestRecord?.season ? `${escapeHtml(String(latestRecord.season))} · custom scoring` : 'No scored games'}</small></div>
+    </div>`;
+}
+
+function renderPlayerWeeklyDetailsBody(league, playerId) {
+  const records = disclosureGameLogRecords(league, playerId);
+  if (!records.length) return '<div class="weekly-detail-empty"><strong>No weekly rows found.</strong><span>Sleeper has not returned a usable game log for this player in the available seasons.</span></div>';
+  const position = playerPrimaryPosition(playerId);
+  return `
+    ${renderPlayerWeeklyUsageSummary(league, playerId, records, position)}
+    <div class="weekly-detail-source-note">
+      <span>Sleeper-wide roster/start percentages</span>
+      <span>Snap share calculated per game</span>
+      <span>Stats ordered by league point value</span>
+    </div>
+    <div class="sleeper-game-log weekly-detail-log">${records.map(rec => renderGameLogSeasonBlock(league, playerId, rec, position)).join('')}</div>`;
+}
+
+function renderPlayerWeeklyDetailsDisclosure(league, playerId, options = {}) {
+  if (!league || !playerId) return '';
+  const label = options.label || 'Weekly stats & usage';
+  const className = options.compact ? ' compact' : '';
+  return `
+    <details class="player-weekly-details${className}" data-player-weekly-details data-player-id="${escapeHtml(String(playerId))}" data-league-id="${escapeHtml(String(league.league_id))}">
+      <summary>
+        <span><strong>${escapeHtml(label)}</strong><small>Rostered %, started %, snaps, custom points, and stat scoring</small></span>
+        <span class="detail-chevron" aria-hidden="true">⌄</span>
+      </summary>
+      <div class="player-weekly-detail-body" data-player-weekly-body>
+        <div class="weekly-detail-prompt">Open to load Sleeper’s available weekly data.</div>
+      </div>
+    </details>`;
+}
+
+function leagueForDetailTarget(target) {
+  const leagueId = target?.dataset?.leagueId;
+  return state.leagues.find(league => String(league.league_id) === String(leagueId)) || getSelectedLeague();
+}
+
+async function ensurePlayerWeeklyData(league, playerId, { respectPlayerFilter = false } = {}) {
+  await fetchHistoricalStatsForPlayer(league, playerId);
+  const records = gameLogSeasonRecordsForPlayer(league, playerId, {
+    mode: respectPlayerFilter ? undefined : 'auto',
+    respectPlayerFilter,
+    limit: PLAYER_DETAIL_SEASON_LIMIT
+  });
+  await fetchOwnershipForRecords(league, records);
+  return records;
+}
+
+async function hydratePlayerWeeklyTarget(target) {
+  if (!target || target.dataset.detailLoaded === 'true' || target.dataset.detailLoaded === 'loading') return;
+  const body = target.querySelector('[data-player-weekly-body]');
+  const league = leagueForDetailTarget(target);
+  const playerId = String(target.dataset.playerId || '');
+  if (!body || !league || !playerId) return;
+  target.dataset.detailLoaded = 'loading';
+  body.innerHTML = '<div class="weekly-detail-loading"><span></span><strong>Loading weekly stats, snaps, and Sleeper usage…</strong></div>';
+  try {
+    await ensurePlayerWeeklyData(league, playerId);
+    if (!target.isConnected) return;
+    body.innerHTML = renderPlayerWeeklyDetailsBody(league, playerId);
+    target.dataset.detailLoaded = 'true';
+  } catch (err) {
+    console.warn(err);
+    if (!target.isConnected) return;
+    body.innerHTML = '<div class="weekly-detail-empty"><strong>Weekly details are temporarily unavailable.</strong><span>The rest of the player analysis is still usable.</span></div>';
+    target.dataset.detailLoaded = 'error';
+  }
+}
+
+async function hydratePlayerCardGameLog(card) {
+  if (!card || card.dataset.gameLogLoaded === 'loading' || card.dataset.gameLogLoaded === 'true') return;
+  const body = card.querySelector('[data-player-card-game-log-body]');
+  const league = leagueForDetailTarget(card);
+  const playerId = String(card.dataset.playerId || '');
+  if (!body || !league || !playerId) return;
+  card.dataset.gameLogLoaded = 'loading';
+  body.innerHTML = '<div class="weekly-detail-loading"><span></span><strong>Loading weekly stats, snaps, and Sleeper usage…</strong></div>';
+  try {
+    await ensurePlayerWeeklyData(league, playerId, { respectPlayerFilter: true });
+    if (!card.isConnected) return;
+    body.innerHTML = renderPlayerCardGameLog(league, playerCardData(league, playerId));
+    card.dataset.gameLogLoaded = 'true';
+  } catch (err) {
+    console.warn(err);
+    if (!card.isConnected) return;
+    body.innerHTML = '<div class="weekly-detail-empty"><strong>Game log temporarily unavailable.</strong></div>';
+    card.dataset.gameLogLoaded = 'error';
+  }
 }
 
 function compareMetric(label, aValue, bValue, formatter = v => roundNum(v, 1)) {
@@ -3500,14 +4040,49 @@ function lineupSlotDisplay(slot, slotIndex, starters = []) {
   return `${base} ${Math.max(1, ordinal)}`;
 }
 
-function renderLineupStarterRow(row, starters) {
+function lineupWeekProjectionLabel(period = upcomingLineupPeriod()) {
+  return `W${safeNumber(period?.week, 1)} proj`;
+}
+
+function renderCurrentLineupPlayer(row, league) {
+  const detail = row.currentDetail;
+  const projectionLabel = lineupWeekProjectionLabel();
+  if (!detail) {
+    return `<div class="lineup-current-player empty">
+      <span class="lineup-current-label">Current Sleeper lineup</span>
+      <div class="lineup-current-copy"><strong>Open slot</strong><small>No player is currently set in this slot.</small></div>
+      <div class="lineup-current-projection"><strong>—</strong><span>${escapeHtml(projectionLabel)}</span></div>
+    </div>`;
+  }
+  const opponent = detail.opponent ? ` vs ${detail.opponent}` : '';
+  const status = detail.unavailableReason
+    ? `<span class="lineup-status-badge warn">${escapeHtml(detail.unavailableReason)}</span>`
+    : detail.injuryConcern
+      ? `<span class="lineup-status-badge warn">${escapeHtml(detail.status)}</span>`
+      : '';
+  const comparisonClass = row.sameAsCurrent ? ' matched' : ' swap';
+  const comparisonLabel = row.sameAsCurrent ? 'Current lineup · already set' : 'Current Sleeper lineup';
+  return `<div class="lineup-current-player${comparisonClass}">
+    <span class="lineup-current-label">${escapeHtml(comparisonLabel)}</span>
+    <div class="lineup-current-copy">
+      <strong>${escapeHtml(detail.name)} ${status}</strong>
+      <small>${escapeHtml(detail.position)} · ${escapeHtml(detail.team)}${escapeHtml(opponent)}</small>
+    </div>
+    <div class="lineup-current-projection"><strong>${displayNumber(detail.points)}</strong><span>${escapeHtml(projectionLabel)}</span></div>
+    ${row.sameAsCurrent ? '' : renderPlayerWeeklyDetailsDisclosure(league, detail.playerId, { compact: true, label: 'Current player weekly stats' })}
+  </div>`;
+}
+
+function renderLineupStarterRow(row, starters, league) {
   const slotLabel = lineupSlotDisplay(row.slot, row.slotIndex, starters);
   const detail = row.detail;
+  const projectionLabel = lineupWeekProjectionLabel();
   if (!detail) {
     return `<article class="lineup-player-row lineup-empty-slot">
       <span class="lineup-slot">${escapeHtml(slotLabel)}</span>
       <div><h4>Open lineup slot</h4><p>No eligible active player found.</p></div>
-      <div class="lineup-projection"><strong>0</strong><span>proj pts</span></div>
+      <div class="lineup-projection"><strong>0</strong><span>${escapeHtml(projectionLabel)}</span></div>
+      ${renderCurrentLineupPlayer(row, league)}
     </article>`;
   }
   const opponent = detail.opponent ? ` vs ${detail.opponent}` : '';
@@ -3520,19 +4095,23 @@ function renderLineupStarterRow(row, starters) {
       <p>${escapeHtml(detail.position)} · ${escapeHtml(detail.team)}${escapeHtml(opponent)} · ${escapeHtml(sourceLabel)}</p>
       <span class="lineup-matchup ${escapeHtml(detail.matchupTone)}">${escapeHtml(detail.matchupLabel)}${detail.source === 'weekly' && detail.baselinePpg ? ` · ${escapeHtml(displaySignedNumber(detail.matchupDelta))}` : ''}</span>
     </div>
-    <div class="lineup-projection"><strong>${displayNumber(detail.points)}</strong><span>proj pts</span></div>
+    <div class="lineup-projection"><strong>${displayNumber(detail.points)}</strong><span>${escapeHtml(projectionLabel)}</span></div>
+    ${renderCurrentLineupPlayer(row, league)}
+    ${renderPlayerWeeklyDetailsDisclosure(league, detail.playerId, { compact: true })}
   </article>`;
 }
 
-function renderLineupBenchRow(detail) {
+function renderLineupBenchRow(detail, league) {
   const opponent = detail.opponent ? ` vs ${detail.opponent}` : '';
+  const projectionLabel = lineupWeekProjectionLabel();
   return `<article class="lineup-bench-row">
     <div>
       <h4>${escapeHtml(detail.name)}</h4>
       <p>${escapeHtml(detail.position)} · ${escapeHtml(detail.team)}${escapeHtml(opponent)}</p>
     </div>
     <span class="lineup-matchup ${escapeHtml(detail.matchupTone)}">${escapeHtml(detail.matchupLabel)}</span>
-    <strong>${displayNumber(detail.points)}</strong>
+    <div class="lineup-bench-projection"><strong>${displayNumber(detail.points)}</strong><span>${escapeHtml(projectionLabel)}</span></div>
+    ${renderPlayerWeeklyDetailsDisclosure(league, detail.playerId, { compact: true })}
   </article>`;
 }
 
@@ -3541,7 +4120,7 @@ function renderLineupChanges(lineup) {
   if (!output) return;
   if (!lineup.period.inRegularSeason) {
     output.className = 'lineup-changes offseason';
-    output.innerHTML = `<strong>Week 1 planning mode</strong><span>Sleeper has not entered the regular season, so this is a fresh recommended lineup rather than a comparison with last season’s starters.</span>`;
+    output.innerHTML = `<strong>Week 1 planning mode</strong><span>Each slot still shows the starter currently saved in Sleeper. Start/sit change totals will activate when the regular-season lineup cycle begins.</span>`;
     return;
   }
   if (!lineup.startIds.length && !lineup.sitIds.length) {
@@ -3609,10 +4188,10 @@ function renderRecommendedLineup() {
     </div>`;
 
   startersOutput.className = 'recommended-lineup';
-  startersOutput.innerHTML = lineup.starters.map(row => renderLineupStarterRow(row, lineup.starters)).join('');
+  startersOutput.innerHTML = lineup.starters.map(row => renderLineupStarterRow(row, lineup.starters, league)).join('');
   benchOutput.className = lineup.bench.length ? 'lineup-bench' : 'lineup-bench empty';
   benchOutput.innerHTML = lineup.bench.length
-    ? lineup.bench.slice(0, 7).map(renderLineupBenchRow).join('')
+    ? lineup.bench.slice(0, 7).map(detail => renderLineupBenchRow(detail, league)).join('')
     : 'No additional active bench options have usable projections.';
 
   if (unavailableOutput) {
@@ -3734,7 +4313,8 @@ function renderPlayerValues() {
   const selected = selectedCompareIds();
   renderCompareSelectionSlots();
   const dynastyHeaders = dynasty ? '<th>Age</th><th>Retirement horizon</th>' : '';
-  el.innerHTML = `<table><thead><tr><th>Player</th><th>Pos</th><th>Value</th>${dynastyHeaders}<th>Forecast</th><th>VORP</th><th>Efficiency</th><th>ADP</th><th>Confidence</th></tr></thead><tbody>${rows.map(v => {
+  const detailColspan = dynasty ? 11 : 9;
+  el.innerHTML = `<table class="player-values-table"><thead><tr><th>Player</th><th>Pos</th><th>Value</th>${dynastyHeaders}<th>Forecast</th><th>VORP</th><th>Efficiency</th><th>ADP</th><th>Confidence</th><th>Weekly</th></tr></thead><tbody>${rows.map(v => {
     const isA = String(selected.A) === String(v.playerId);
     const isB = String(selected.B) === String(v.playerId);
     const selectedClass = isA ? ' selected-a' : isB ? ' selected-b' : '';
@@ -3746,120 +4326,17 @@ function renderPlayerValues() {
     const dynastyCells = dynasty
       ? `<td>${ageProfile?.age ? displayNumber(ageProfile.age, 1) : '—'}</td><td title="Estimated positional planning horizon, not a player-specific retirement prediction">${escapeHtml(retirementHorizonLabel(ageProfile, { compact: true }) || '—')}</td>`
       : '';
-    return `<tr class="player-row-clickable${selectedClass}${locked ? ' selection-locked' : ''}" data-player-id="${escapeHtml(v.playerId)}"><td><div class="player-table-name-row">${selectionBadge}<span>${escapeHtml(v.name)}</span></div><small>${escapeHtml(player.team || 'FA')} · ${escapeHtml(selectionText)}</small></td><td>${escapeHtml(v.position)}</td><td><strong>${displayNumber(v.value, 0)}</strong></td>${dynastyCells}<td>${displayNumber(v.forecastPpg)}</td><td>${displaySignedNumber(v.vorp)}</td><td>${displayNumber(v.efficiency, 0)}th</td><td>${v.marketAdp ? displayNumber(v.marketAdp) : '—'}</td><td>${escapeHtml(v.confidence)}</td></tr>`;
+    const detailRowId = `player-weekly-row-${domSafeId(v.playerId)}`;
+    return `<tr class="player-row-clickable${selectedClass}${locked ? ' selection-locked' : ''}" data-player-id="${escapeHtml(v.playerId)}"><td><div class="player-table-name-row">${selectionBadge}<span>${escapeHtml(v.name)}</span></div><small>${escapeHtml(player.team || 'FA')} · ${escapeHtml(selectionText)}</small></td><td>${escapeHtml(v.position)}</td><td><strong>${displayNumber(v.value, 0)}</strong></td>${dynastyCells}<td>${displayNumber(v.forecastPpg)}</td><td>${displaySignedNumber(v.vorp)}</td><td>${displayNumber(v.efficiency, 0)}th</td><td>${v.marketAdp ? displayNumber(v.marketAdp) : '—'}</td><td>${escapeHtml(v.confidence)}</td><td><button class="player-weekly-toggle" type="button" data-player-weekly-toggle aria-expanded="false" aria-controls="${escapeHtml(detailRowId)}">Stats <span aria-hidden="true">⌄</span></button></td></tr>
+      <tr id="${escapeHtml(detailRowId)}" class="player-inline-detail-row" data-player-weekly-row data-player-id="${escapeHtml(v.playerId)}" data-league-id="${escapeHtml(league.league_id)}" hidden><td colspan="${detailColspan}"><div class="player-weekly-detail-body" data-player-weekly-body><div class="weekly-detail-prompt">Expand to load Sleeper’s weekly stats and usage.</div></div></td></tr>`;
   }).join('')}</tbody></table>`;
   el.querySelectorAll('tr[data-player-id]').forEach(row => {
-    row.addEventListener('click', () => togglePlayerValueSelection(row.dataset.playerId));
+    if (row.matches('[data-player-weekly-row]')) return;
+    row.addEventListener('click', event => {
+      if (event.target.closest('[data-player-weekly-toggle]')) return;
+      togglePlayerValueSelection(row.dataset.playerId);
+    });
   });
-}
-
-function rosterOptionsMarkup(league, { markMyTeam = true } = {}) {
-  const myTeamRosterId = savedMyTeamRosterId(league);
-  return (league?.rosters || []).map(roster => {
-    const rosterId = Number(roster.roster_id);
-    const myTeamLabel = markMyTeam && rosterId === myTeamRosterId ? ' · My team' : '';
-    return `<option value="${rosterId}">${escapeHtml(teamName(league, rosterId))}${myTeamLabel}</option>`;
-  }).join('');
-}
-
-function teamSelectDefaultValue(league, {
-  previousValue = '',
-  previousLeagueId = '',
-  preferMyTeam = true,
-  preserve = true,
-  selections = state.myTeamByLeague
-} = {}) {
-  const leagueId = String(league?.league_id || '');
-  const rosterIds = (league?.rosters || []).map(roster => Number(roster.roster_id));
-  const previousRosterId = Number(previousValue);
-  if (preserve && previousLeagueId === leagueId && rosterIds.includes(previousRosterId)) {
-    return String(previousRosterId);
-  }
-  const preferredRosterId = preferMyTeam
-    ? defaultTeamRosterId(league, selections)
-    : Number(rosterIds[0] || 0);
-  return rosterIds.includes(preferredRosterId) ? String(preferredRosterId) : '';
-}
-
-function fillRosterSelect(select, league, { preferMyTeam = true, preserve = true } = {}) {
-  if (!select) return;
-  const previous = select.value;
-  const previousLeagueId = select.dataset.leagueId || '';
-  const leagueId = String(league?.league_id || '');
-  const hasRosters = Boolean(league?.rosters?.length);
-
-  select.innerHTML = hasRosters ? rosterOptionsMarkup(league) : '<option value="">No league loaded</option>';
-  select.disabled = !hasRosters;
-  select.dataset.leagueId = leagueId;
-  if (!hasRosters) return;
-
-  const nextValue = teamSelectDefaultValue(league, {
-    previousValue: previous,
-    previousLeagueId,
-    preferMyTeam,
-    preserve
-  });
-  if (nextValue) select.value = nextValue;
-}
-
-function fillMyTeamSelect() {
-  const select = $('myTeamSelect');
-  const help = $('myTeamHelp');
-  const setting = $('myTeamSetting');
-  if (!select) return;
-  const league = getSelectedLeague();
-
-  if (!league?.rosters?.length) {
-    select.innerHTML = '<option value="">No league loaded</option>';
-    select.disabled = true;
-    select.dataset.leagueId = '';
-    if (help) help.textContent = 'Add and select a league, then choose your roster.';
-    setting?.classList.remove('configured');
-    return;
-  }
-
-  const myTeamRosterId = savedMyTeamRosterId(league);
-  select.innerHTML = `<option value="">Choose your team</option>${rosterOptionsMarkup(league, { markMyTeam: false })}`;
-  select.disabled = false;
-  select.dataset.leagueId = String(league.league_id);
-  select.value = myTeamRosterId ? String(myTeamRosterId) : '';
-  if (help) {
-    help.textContent = myTeamRosterId
-      ? `${teamName(league, myTeamRosterId)} defaults across Lineup, Trade, Free Agency, and Draft.`
-      : `Choose your roster in ${league.name || 'this league'} to make every analyzer open on your team.`;
-  }
-  setting?.classList.toggle('configured', Boolean(myTeamRosterId));
-}
-
-function applyMyTeamSelection() {
-  const league = getSelectedLeague();
-  const select = $('myTeamSelect');
-  if (!league || !select) return;
-  const rosterId = Number(select.value);
-  const validRosterId = (league.rosters || []).some(roster => Number(roster.roster_id) === rosterId) ? rosterId : 0;
-  saveMyTeamForLeague(league.league_id, validRosterId || '');
-
-  const defaultRosterId = defaultTeamRosterId(league);
-  for (const id of ['lineupTeamSelect', 'freeAgencyTeamSelect', 'draftTeamSelect', 'teamASelect']) {
-    const control = $(id);
-    if (control && [...control.options].some(option => Number(option.value) === defaultRosterId)) {
-      control.value = String(defaultRosterId);
-    }
-  }
-  const teamB = $('teamBSelect');
-  if (teamB) {
-    const partner = [...teamB.options].find(option => Number(option.value) !== defaultRosterId);
-    if (partner) teamB.value = partner.value;
-  }
-  if ($('tradeTargetSideSelect')) $('tradeTargetSideSelect').value = 'A';
-
-  state.selectedAssets = { A: [], B: [] };
-  state.freeAgency.selectedPlayerId = '';
-  renderEverything();
-  scheduleTradeEvaluation(0);
-  logStatus(validRosterId
-    ? `${teamName(league, validRosterId)} is now your default team for ${league.name || league.league_id}.`
-    : `Cleared the default team for ${league.name || league.league_id}.`);
 }
 
 function renderLeagueList() {
@@ -3871,11 +4348,7 @@ function renderLeagueList() {
   }
   const selected = localStorage.getItem(STORAGE_KEYS.selectedLeague) || state.leagues[0]?.league_id;
   el.className = 'league-list';
-  el.innerHTML = state.leagues.map(league => {
-    const myTeamRosterId = savedMyTeamRosterId(league);
-    const myTeamText = myTeamRosterId ? `My team: ${teamName(league, myTeamRosterId)}` : 'My team not set';
-    return `<button class="league-card league-card-button ${String(league.league_id) === String(selected) ? 'active' : ''}" data-league-id="${escapeHtml(league.league_id)}"><strong>${escapeHtml(league.name || league.league_id)}</strong><small>${league.season} • ${league.total_rosters} teams • ${escapeHtml(myTeamText)} • ${Object.keys(league.matchupsByWeek || {}).length} weeks • ${league.historyLoadedSeasons?.length ? `stats ${league.historyLoadedSeasons.join(', ')}` : 'league data only'}</small></button>`;
-  }).join('');
+  el.innerHTML = state.leagues.map(league => `<button class="league-card league-card-button ${String(league.league_id) === String(selected) ? 'active' : ''}" data-league-id="${escapeHtml(league.league_id)}"><strong>${escapeHtml(league.name || league.league_id)}</strong><small>${league.season} • ${league.total_rosters} teams • ${Object.keys(league.matchupsByWeek || {}).length} weeks • ${league.historyLoadedSeasons?.length ? `stats ${league.historyLoadedSeasons.join(', ')}` : 'league data only'}</small></button>`).join('');
   el.querySelectorAll('[data-league-id]').forEach(card => card.addEventListener('click', () => selectLeagueAcrossApp(card.dataset.leagueId)));
 }
 
@@ -3888,7 +4361,6 @@ function fillLeagueSelects() {
     ? state.leagues.map(l => `<option value="${l.league_id}">${escapeHtml(l.name || l.league_id)}</option>`).join('')
     : '<option value="">No league loaded</option>';
   if (previous && state.leagues.some(l => String(l.league_id) === String(previous))) el.value = previous;
-  fillMyTeamSelect();
   fillTeamSelects();
   fillLineupControls();
   fillFreeAgencyControls();
@@ -3899,13 +4371,14 @@ function fillLeagueSelects() {
 
 function fillTeamSelects() {
   const league = getSelectedLeague();
-  fillRosterSelect($('teamASelect'), league);
-  fillRosterSelect($('teamBSelect'), league, { preferMyTeam: false });
-  const teamB = $('teamBSelect');
-  if (teamB?.options.length > 1 && $('teamASelect')?.value === teamB.value) {
-    const partner = [...teamB.options].find(option => option.value !== $('teamASelect').value);
-    if (partner) teamB.value = partner.value;
+  for (const id of ['teamASelect', 'teamBSelect']) {
+    const el = $(id);
+    const previous = el.value;
+    el.innerHTML = league ? league.rosters.map(r => `<option value="${r.roster_id}">${escapeHtml(teamName(league, r.roster_id))}</option>`).join('') : '';
+    if (previous && [...el.options].some(o => o.value === previous)) el.value = previous;
   }
+  const teamB = $('teamBSelect');
+  if (teamB.options.length > 1 && $('teamASelect').value === teamB.value) teamB.selectedIndex = 1;
   fillTeamPlayerSelects();
 }
 
@@ -4550,8 +5023,12 @@ function fillDraftControls() {
   const seasonSelect = $('draftSeasonSelect');
   if (!teamSelect || !seasonSelect) return;
   const league = getSelectedLeague();
+  const previousTeam = teamSelect.value;
   const previousSeason = Number(seasonSelect.value);
-  fillRosterSelect(teamSelect, league);
+  teamSelect.innerHTML = league
+    ? league.rosters.map(roster => `<option value="${roster.roster_id}">${escapeHtml(teamName(league, roster.roster_id))}</option>`).join('')
+    : '<option value="">No league loaded</option>';
+  if (previousTeam && [...teamSelect.options].some(option => option.value === previousTeam)) teamSelect.value = previousTeam;
 
   const seasons = availableDraftSeasons(league);
   seasonSelect.innerHTML = seasons.length
@@ -4715,8 +5192,7 @@ function activateTab(tabId) {
   document.querySelectorAll('.tab').forEach(tab => {
     const active = tab.dataset.tab === tabId;
     tab.classList.toggle('active', active);
-    if (active) tab.setAttribute('aria-current', 'page');
-    else tab.removeAttribute('aria-current');
+    tab.setAttribute('aria-current', active ? 'page' : 'false');
   });
   document.querySelectorAll('.tab-panel').forEach(panel => panel.classList.toggle('active', panel.id === tabId));
   if (tabId === 'lineup') renderRecommendedLineup();
@@ -4740,47 +5216,30 @@ function sendPlayerToTrade(playerId, leagueId) {
   selectLeagueAcrossApp(league.league_id);
 
   const roster = ownerRosterForPlayer(league, playerId);
-  let side = 'A';
   if (roster && $('teamASelect')) {
-    const teamA = $('teamASelect');
-    const teamB = $('teamBSelect');
-    const ownerRosterId = Number(roster.roster_id);
-    const myTeamRosterId = savedMyTeamRosterId(league);
-    const desiredTeamA = myTeamRosterId && myTeamRosterId !== ownerRosterId ? myTeamRosterId : ownerRosterId;
-    let desiredTeamB = Number(teamB?.value || 0);
-
-    if (myTeamRosterId && myTeamRosterId !== ownerRosterId) {
-      desiredTeamB = ownerRosterId;
-      side = 'B';
-    } else if (desiredTeamB === desiredTeamA) {
-      desiredTeamB = Number([...(teamB?.options || [])].find(option => Number(option.value) !== desiredTeamA)?.value || 0);
+    $('teamASelect').value = String(roster.roster_id);
+    if ($('teamBSelect')?.value === String(roster.roster_id) && $('teamBSelect').options.length > 1) {
+      $('teamBSelect').selectedIndex = [...$('teamBSelect').options].findIndex(option => option.value !== String(roster.roster_id));
     }
-
-    const teamsChanged = Number(teamA.value) !== desiredTeamA || Number(teamB?.value || 0) !== desiredTeamB;
-    if (teamsChanged) state.selectedAssets = { A: [], B: [] };
-    teamA.value = String(desiredTeamA);
-    if (teamB && desiredTeamB) teamB.value = String(desiredTeamB);
     fillTeamPlayerSelects();
   }
 
   const asset = { type: 'player', playerId: String(playerId) };
   const key = assetKey(asset);
-  if (!state.selectedAssets[side].some(existing => assetKey(existing) === key)) {
-    state.selectedAssets[side].push(asset);
+  if (!state.selectedAssets.A.some(existing => assetKey(existing) === key)) {
+    state.selectedAssets.A.push(asset);
   }
-  const playerSelect = $(side === 'A' ? 'teamAPlayerSelect' : 'teamBPlayerSelect');
-  const playerSearch = $(side === 'A' ? 'teamAPlayerSearch' : 'teamBPlayerSearch');
-  if (playerSelect && [...playerSelect.options].some(option => option.value === `player:${playerId}`)) {
-    playerSelect.value = `player:${playerId}`;
+  if ($('teamAPlayerSelect') && [...$('teamAPlayerSelect').options].some(option => option.value === `player:${playerId}`)) {
+    $('teamAPlayerSelect').value = `player:${playerId}`;
   }
-  if (playerSearch) playerSearch.value = '';
+  if ($('teamAPlayerSearch')) $('teamAPlayerSearch').value = '';
   renderAssetList('A');
   renderAssetList('B');
 
   const result = $('tradeResult');
   if (result) {
     result.className = 'trade-result empty';
-    result.textContent = `${playerName(playerId)} was added to Team ${side}. Add the other side and the analysis will update automatically.`;
+    result.textContent = `${playerName(playerId)} was added to Team A. Add the other side and the analysis will update automatically.`;
   }
   scheduleTradeEvaluation();
   activateTab('trade');
@@ -4789,6 +5248,21 @@ function sendPlayerToTrade(playerId, leagueId) {
 
 function wirePlayerCardActions() {
   document.addEventListener('click', event => {
+    const weeklyToggle = event.target.closest('[data-player-weekly-toggle]');
+    if (weeklyToggle) {
+      event.preventDefault();
+      event.stopPropagation();
+      const rowId = weeklyToggle.getAttribute('aria-controls');
+      const detailRow = rowId ? document.getElementById(rowId) : null;
+      if (!detailRow) return;
+      const willOpen = detailRow.hidden;
+      detailRow.hidden = !willOpen;
+      weeklyToggle.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+      weeklyToggle.classList.toggle('expanded', willOpen);
+      if (willOpen) hydratePlayerWeeklyTarget(detailRow);
+      return;
+    }
+
     const tabButton = event.target.closest('[data-player-card-tab]');
     if (tabButton) {
       const card = tabButton.closest('[data-player-card]');
@@ -4796,6 +5270,7 @@ function wirePlayerCardActions() {
       const targetPane = tabButton.dataset.playerCardTab;
       card.querySelectorAll('[data-player-card-tab]').forEach(button => button.classList.toggle('active', button === tabButton));
       card.querySelectorAll('[data-player-card-pane]').forEach(pane => pane.classList.toggle('active', pane.dataset.playerCardPane === targetPane));
+      if (targetPane === 'gamelog') hydratePlayerCardGameLog(card);
       return;
     }
 
@@ -4806,6 +5281,11 @@ function wirePlayerCardActions() {
       sendPlayerToTrade(card.dataset.playerId, card.dataset.leagueId);
     }
   });
+
+  document.addEventListener('toggle', event => {
+    const details = event.target.closest?.('[data-player-weekly-details]');
+    if (details?.open) hydratePlayerWeeklyTarget(details);
+  }, true);
 }
 
 function fillPickSelects() {
@@ -5362,10 +5842,6 @@ function exportData() {
   const data = {
     generatedAt: new Date().toISOString(),
     nflState: state.nflState,
-    preferences: {
-      selectedLeagueId: localStorage.getItem(STORAGE_KEYS.selectedLeague) || '',
-      myTeamByLeague: { ...state.myTeamByLeague }
-    },
     leagues: state.leagues.map(l => ({
       league: stripMaps(l),
       teamStrength: [...l.teamStrength.entries()],
@@ -5393,6 +5869,10 @@ function stripMaps(league) {
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+}
+
+function domSafeId(value) {
+  return String(value ?? '').replace(/[^a-zA-Z0-9_-]/g, '-');
 }
 
 async function loadAll(idsOverride = null) {
@@ -5529,9 +6009,7 @@ function wireEvents() {
     state.freeAgency.selectedPlayerId = '';
     localStorage.removeItem(STORAGE_KEYS.leagues);
     localStorage.removeItem(STORAGE_KEYS.selectedLeague);
-    localStorage.removeItem(STORAGE_KEYS.myTeamByLeague);
     state.savedLeagueIds = [];
-    state.myTeamByLeague = {};
     if ($('leagueIdInput')) $('leagueIdInput').value = '';
     if ($('recapOutput')) $('recapOutput').value = '';
     renderEverything();
@@ -5559,8 +6037,6 @@ function wireEvents() {
     state.freeAgency.selectedPlayerId = '';
     renderEverything();
   });
-
-  $('myTeamSelect')?.addEventListener('change', applyMyTeamSelection);
 
   ['teamASelect', 'teamBSelect'].forEach(id => {
     $(id)?.addEventListener('change', () => {
@@ -5715,13 +6191,15 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     state,
     DEFAULT_SETTINGS,
-    savedMyTeamRosterId,
-    defaultTeamRosterId,
-    teamSelectDefaultValue,
     normalizePosition,
     isDynastyLeague,
     isSuperflexLeague,
     fantasyPointsFromStats,
+    ownershipLeagueType,
+    snapPercentForRow,
+    gameLogSectionsForPosition,
+    gameLogMetricPoints,
+    mergeSeasonRecordsForDisplay,
     marketValueFromRank,
     marketSignalForPlayer,
     ageCurveProfile,
@@ -5734,7 +6212,9 @@ if (typeof module !== 'undefined' && module.exports) {
     rebuildWeeklySchedule,
     weeklyProjectionForPlayer,
     optimizeLineupAssignments,
+    currentLineupSlotsForRoster,
     recommendedLineupForRoster,
+    renderLineupStarterRow,
     projectionIntrinsicValue,
     playerValue,
     optimalProjectedLineupScore,
