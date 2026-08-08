@@ -2313,9 +2313,16 @@ tbody tr:hover { background: rgba(100, 181, 255, 0.055); }
 
 .pick-options-empty { margin: 0; padding: 10px; color: var(--muted); font-size: 0.75rem; text-align: center; }
 
-.recap-controls { grid-template-columns: minmax(180px, 0.65fr) minmax(220px, 1fr) auto; }
-.recap-action-wrap { display: flex; align-items: end; }
+.recap-controls { grid-template-columns: minmax(150px, 0.45fr) minmax(220px, 0.7fr) minmax(280px, 1fr); }
+.recap-action-wrap {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
 .recap-action-wrap button { min-height: 45px; }
+.recap-share-hint { max-width: 980px; margin: 12px 0 0; }
 .output { margin-top: 16px; border-radius: 15px; }
 
 .player-controls { grid-template-columns: minmax(190px, 0.65fr) repeat(2, minmax(220px, 1fr)); }
@@ -2560,7 +2567,12 @@ tbody tr:hover { background: rgba(100, 181, 255, 0.055); }
   .draft-capital-heading strong { text-align: left; }
   .pick-availability-heading { display: grid; gap: 5px; }
   .pick-availability-heading small { text-align: left; }
-  .recap-action-wrap button { width: 100%; }
+  .recap-action-wrap {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .recap-action-wrap button { width: 100%; min-height: 50px; padding-inline: 10px; }
 
   .button-row.player-compare-actions,
   .settings-data-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }

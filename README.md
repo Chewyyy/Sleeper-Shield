@@ -29,7 +29,7 @@ Then open `http://localhost:5173`.
 - Trade target recommendations rank players on the selected partner by positional need, projected lineup gain, value over replacement, and the partner's replacement cost.
 - Generate Offer searches one-, two-, and three-asset packages from the selected team's players and owned picks, prioritizing the model's fair-value range and both rosters' needs.
 - Trade analysis updates automatically whenever a team, player, pick, or model setting changes.
-- The Free Agency Analyzer ranks only unrostered players, then models the lineup, depth, and value effect of swapping each target for potential drop candidates.
+- The Free Agency Analyzer ranks only unrostered players, then models the lineup, depth, and value effect of swapping each target for potential drop candidates. Its Best Available, QB, RB, WR, TE, and IDP filters automatically hide positions the active league does not use.
 - Valuable cut candidates are flagged "Trade, do not drop" instead of being presented as disposable roster pieces.
 - Pick values use the exact Sleeper draft slot once order is published; unset orders use original-roster strength, with format and future-year adjustments applied in either case.
 - The rookie fit board ranks the best overall roster fits on the left and likely options at each owned pick on the right.
@@ -38,6 +38,8 @@ Then open `http://localhost:5173`.
 - Settings saves a separate “My Team” roster for every league on the device. Switching leagues defaults Recommended Lineup, Trade Side A, Free Agency, and Draft to that roster while preserving temporary alternate-team inspection.
 - The primary navigation is a persistent bottom football dock on desktop and mobile, with a dedicated icon for every section and iPhone safe-area padding.
 - The Guides tab provides a full usage manual, field definitions, strategy guidance, decision workflows, and limitations for every feature.
+- Recap packages support Clean Analyst, Commissioner Roast, Broadcast Booth, Front Office GM, and Pat McAfee Show-inspired high-energy sports-talk treatments while keeping every claim grounded in loaded Sleeper data.
+- Copy & send to ChatGPT copies the entire assembled recap package and uses the device share sheet when available; if a direct handoff is unavailable, it opens ChatGPT with the prompt left safely on the clipboard.
 - Displayed numeric outputs are capped at two decimal places.
 - The generated Sleeper Shield identity is included as install icons, an Apple touch icon, browser favicons, and the in-app brand mark.
 

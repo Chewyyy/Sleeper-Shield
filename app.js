@@ -10,6 +10,7 @@ const STORAGE_KEYS = {
   leagues: 'sts.leagueIds',
   selectedLeague: 'sts.selectedLeagueId',
   myTeamByLeague: 'sts.myTeamByLeague',
+  recapStyle: 'sts.recapStyle',
   settings: 'sts.settings'
 };
 
@@ -45,6 +46,8 @@ const POSITION_VALUE_CAPS = { K: 750, DEF: 950 };
 const FLEX_SLOTS = new Set(['FLEX', 'REC_FLEX', 'WRRB_FLEX', 'WRT', 'RB_WR_TE']);
 const SUPER_FLEX_SLOTS = new Set(['SUPER_FLEX', 'SUPERFLEX', 'OP']);
 const IDP_FLEX_SLOTS = new Set(['IDP_FLEX', 'DL_LB_DB']);
+const IDP_POSITIONS = new Set(['DL', 'LB', 'DB']);
+const FREE_AGENCY_POSITION_ORDER = ['QB', 'RB', 'WR', 'TE', 'IDP'];
 const RECENT_GAME_COUNT = 5;
 const PLAYER_DETAIL_SEASON_LIMIT = 3;
 const PLAYER_DETAIL_CACHE_HOURS = 12;
@@ -75,6 +78,41 @@ const AGE_STAGE_LABELS = {
   unknown: 'Age unavailable'
 };
 
+const DEFAULT_RECAP_STYLE = 'pat-mcafee';
+const RECAP_STYLES = Object.freeze({
+  clean: {
+    label: 'Clean Analyst',
+    descriptor: 'Clear, balanced, and data-first',
+    instruction: 'Use a clear, balanced analyst voice. Prioritize the most important results, explain why they mattered, and keep the humor light.'
+  },
+  commissioner: {
+    label: 'Commissioner Roast',
+    descriptor: 'League-wide jokes and trash talk',
+    instruction: 'Write like a sharp fantasy commissioner recapping the league chat. Roast bad decisions, celebrate great ones, and spread the jokes around without becoming mean-spirited.'
+  },
+  broadcast: {
+    label: 'Broadcast Booth',
+    descriptor: 'Dramatic game-day storytelling',
+    instruction: 'Use an energetic football-broadcast voice with strong headlines, momentum swings, matchup drama, and concise color commentary.'
+  },
+  'front-office': {
+    label: 'Front Office GM',
+    descriptor: 'Roster strategy and consequences',
+    instruction: 'Use a decisive front-office voice. Emphasize roster construction, lineup efficiency, transactions, team direction, and the strategic consequences of each manager’s choices.'
+  },
+  'pat-mcafee': {
+    label: 'Pat McAfee Show',
+    descriptor: 'High-energy sports-talk sarcasm',
+    instruction: 'Use the broad energy of a high-octane, irreverent football talk show: loud, fast-moving, sarcastic, funny, conversational, and willing to roast objectively bad fantasy decisions. Capture the general spirit people associate with the Pat McAfee Show without impersonating Pat McAfee or any host, claiming the recap is from the show, or copying signature catchphrases. Keep useful football analysis underneath the jokes.'
+  }
+});
+
+const RECAP_RANGE_PROMPTS = Object.freeze({
+  week: 'Using the league data above, write an entertaining but useful fantasy football recap. Cover the winners and losers, biggest overperformers, awful bench decisions, important trades or waiver moves, team trends, and what managers should watch next.',
+  offseason: 'Using the offseason data above, write a fantasy football offseason recap. Cover the draft story, draft winners and losers, trades or pick movement, notable free-agent or waiver activity when present, team roster needs, and what managers should watch entering the season.',
+  draft: 'Using only the draft and draft-trade data above, write a focused fantasy football draft recap. Identify the best draft classes, risky reaches, value picks, positional runs, draft-day trades, and which teams changed their outlook the most.'
+});
+
 
 const state = {
   nflState: null,
@@ -92,6 +130,7 @@ const state = {
   leagues: [],
   savedLeagueIds: loadSavedLeagueIds(),
   myTeamByLeague: loadMyTeamByLeague(),
+  recapStyle: loadRecapStyle(),
   selectedAssets: { A: [], B: [] },
   freeAgency: { selectedPlayerId: '' },
   settings: loadSettings()
@@ -126,6 +165,41 @@ function loadSavedLeagueIds() {
 function saveLeagueIds(ids) {
   state.savedLeagueIds = [...new Set((ids || []).map(String).filter(Boolean))];
   localStorage.setItem(STORAGE_KEYS.leagues, state.savedLeagueIds.join('\n'));
+}
+
+function normalizeRecapStyle(styleKey) {
+  return Object.prototype.hasOwnProperty.call(RECAP_STYLES, styleKey) ? styleKey : DEFAULT_RECAP_STYLE;
+}
+
+function loadRecapStyle() {
+  try {
+    return normalizeRecapStyle(localStorage.getItem(STORAGE_KEYS.recapStyle));
+  } catch {
+    return DEFAULT_RECAP_STYLE;
+  }
+}
+
+function recapPromptForRange(range, styleKey = DEFAULT_RECAP_STYLE) {
+  const normalizedRange = range === 'offseason' || range === 'draft' ? range : 'week';
+  const style = RECAP_STYLES[normalizeRecapStyle(styleKey)];
+  return [
+    RECAP_RANGE_PROMPTS[normalizedRange],
+    `Tone and presentation: ${style.instruction}`,
+    'Accuracy rules: Use only facts supported by the supplied data. Do not invent injuries, motives, private trade talks, manager quotes, or transactions. If data is missing or incomplete, say so plainly.'
+  ].join('\n\n');
+}
+
+function selectedRecapStyleKey() {
+  if (typeof document === 'undefined') return normalizeRecapStyle(state.recapStyle);
+  return normalizeRecapStyle($('recapStyleSelect')?.value || state.recapStyle);
+}
+
+function appendRecapPrompt(lines, range) {
+  const styleKey = selectedRecapStyleKey();
+  const style = RECAP_STYLES[styleKey];
+  lines.push('## Prompt for ChatGPT');
+  lines.push(`Style: ${style.label} — ${style.descriptor}`);
+  lines.push(recapPromptForRange(range, styleKey));
 }
 
 function loadMyTeamByLeague() {
@@ -373,6 +447,26 @@ function activeLeaguePositions(league) {
   }
 
   return active;
+}
+
+function freeAgencyPositionOptions(league) {
+  const activePositions = activeLeaguePositions(league);
+  const options = [{ value: 'ALL', label: 'Best Available' }];
+  for (const position of FREE_AGENCY_POSITION_ORDER) {
+    const isAvailable = position === 'IDP'
+      ? [...IDP_POSITIONS].some(idpPosition => activePositions.has(idpPosition))
+      : activePositions.has(position);
+    if (isAvailable) options.push({ value: position, label: position });
+  }
+  return options;
+}
+
+function freeAgentMatchesPositionFilter(position, positionFilter = 'ALL') {
+  const requestedPosition = String(positionFilter || 'ALL').toUpperCase();
+  const normalizedPosition = normalizePosition(position);
+  if (['ALL', 'NEED', 'BEST_AVAILABLE'].includes(requestedPosition)) return true;
+  if (requestedPosition === 'IDP') return IDP_POSITIONS.has(normalizedPosition);
+  return normalizedPosition === requestedPosition;
 }
 
 async function idbOpen() {
@@ -2388,13 +2482,13 @@ function rosterPlayerIds(league, rosterId) {
   return (league?.rosterMap?.get(Number(rosterId))?.players || []).map(String);
 }
 
-function freeAgentCandidates(league, rosterId, positionFilter = 'NEED', limit = 12) {
+function freeAgentCandidates(league, rosterId, positionFilter = 'ALL', limit = 12) {
   if (!league || !rosterId) return [];
   const rostered = new Set(rosteredPlayerIds(league));
   const beforePlayers = rosterPlayerIds(league, rosterId);
   const needScores = teamPositionNeedScores(league, rosterId);
   const activePositions = activeLeaguePositions(league);
-  const requestedPosition = String(positionFilter || 'NEED').toUpperCase();
+  const requestedPosition = String(positionFilter || 'ALL').toUpperCase();
   const projectionIds = league.projectionModel?.players
     ? [...league.projectionModel.players.keys()]
     : [...state.projections.keys()];
@@ -2412,11 +2506,11 @@ function freeAgentCandidates(league, rosterId, positionFilter = 'NEED', limit = 
       return { playerId, player, position, value, needScore };
     })
     .filter(row => activePositions.has(row.position))
-    .filter(row => !POSITION_ORDER.includes(requestedPosition) || row.position === requestedPosition)
+    .filter(row => freeAgentMatchesPositionFilter(row.position, requestedPosition))
     .filter(row => row.player.active !== false && (row.player.team || row.position === 'DEF'))
     .filter(row => row.value.forecastPpg > 0 || row.value.marketAdp || safeNumber(row.player.search_rank, 9999) < 600)
     .sort((a, b) => {
-      const needMultiplier = requestedPosition === 'NEED' ? 1500 : 650;
+      const needMultiplier = ['ALL', 'NEED', 'BEST_AVAILABLE'].includes(requestedPosition) ? 1500 : 650;
       const aPriority = a.value.value + a.needScore * needMultiplier + Math.max(0, a.value.vorp) * 95 + a.value.confidenceScore * 2;
       const bPriority = b.value.value + b.needScore * needMultiplier + Math.max(0, b.value.vorp) * 95 + b.value.confidenceScore * 2;
       return bPriority - aPriority || b.value.value - a.value.value;
@@ -2436,7 +2530,7 @@ function freeAgentCandidates(league, rosterId, positionFilter = 'NEED', limit = 
       1,
       99
     ), 0);
-    const needMultiplier = requestedPosition === 'NEED' ? 1550 : 700;
+    const needMultiplier = ['ALL', 'NEED', 'BEST_AVAILABLE'].includes(requestedPosition) ? 1550 : 700;
     const priority = row.value.value * 0.62
       + row.needScore * needMultiplier
       + fit.lineupDelta * 230
@@ -2834,8 +2928,17 @@ function applyMyTeamSelection() {
 function fillFreeAgencyControls() {
   const league = getSelectedLeague();
   const select = $('freeAgencyTeamSelect');
-  if (!select) return;
-  fillRosterSelect(select, league);
+  if (select) fillRosterSelect(select, league);
+
+  const positionSelect = $('freeAgencyPositionFilter');
+  if (!positionSelect) return;
+  const previousValue = positionSelect.value || 'ALL';
+  const options = freeAgencyPositionOptions(league);
+  positionSelect.innerHTML = options
+    .map(option => `<option value="${escapeHtml(option.value)}">${escapeHtml(option.label)}</option>`)
+    .join('');
+  positionSelect.value = options.some(option => option.value === previousValue) ? previousValue : 'ALL';
+  positionSelect.disabled = !league;
 }
 
 function fillLineupControls() {
@@ -2864,11 +2967,12 @@ function renderFreeAgencyAnalyzer() {
     return;
   }
 
-  const positionFilter = $('freeAgencyPositionFilter')?.value || 'NEED';
+  const positionFilter = $('freeAgencyPositionFilter')?.value || 'ALL';
   const recommendations = freeAgentCandidates(league, rosterId, positionFilter, 12);
   summary.className = 'free-agency-needs-summary';
   summary.innerHTML = `<strong>${escapeHtml(teamName(league, rosterId))}</strong><span>${escapeHtml(rosterNeedsSummary(league, rosterId))}</span>`;
-  if (status) status.textContent = recommendations.length ? `${recommendations.length} best available` : 'No candidates found';
+  const filterLabel = positionFilter === 'ALL' ? 'best available' : `${positionFilter} available`;
+  if (status) status.textContent = recommendations.length ? `${recommendations.length} ${filterLabel}` : 'No candidates found';
 
   if (!recommendations.length) {
     state.freeAgency.selectedPlayerId = '';
@@ -5547,8 +5651,7 @@ function generateRecap() {
     lines.push('');
   }
 
-  lines.push('## Prompt for ChatGPT');
-  lines.push('Using the league data above, write an entertaining but useful fantasy football recap. Explain what happened, who won/lost the week, biggest overperformers, awful bench decisions, important trades or waiver moves, team trends, and what managers should watch next. Do not invent facts not supported by the data.');
+  appendRecapPrompt(lines, 'week');
   $('recapOutput').value = lines.join('\n');
 }
 
@@ -5609,8 +5712,7 @@ function generateOffseasonRecap(league) {
   rosterLandscapeLines(league).forEach(line => lines.push(line));
   lines.push('');
 
-  lines.push('## Prompt for ChatGPT');
-  lines.push('Using the offseason data above, write a clear fantasy football offseason recap. Include the draft story, draft winners and losers, trades or pick movement, notable free-agent/waiver activity if present, team roster needs, and what managers should watch entering the season. Do not invent facts not supported by the data.');
+  appendRecapPrompt(lines, 'offseason');
   $('recapOutput').value = lines.join('\n');
 }
 
@@ -5628,8 +5730,7 @@ function generateDraftOnlyRecap(league) {
   draftTradeLines(league).forEach(line => lines.push(line));
   lines.push('');
 
-  lines.push('## Prompt for ChatGPT');
-  lines.push('Using only the draft and draft-trade data above, write a focused fantasy football draft recap. Identify the best draft classes, risky reaches, value picks, positional runs, draft-day trades, and which teams changed their outlook the most. Do not invent facts not supported by the data.');
+  appendRecapPrompt(lines, 'draft');
   $('recapOutput').value = lines.join('\n');
 }
 
@@ -6126,17 +6227,92 @@ function scheduleModelSettingsUpdate(delay = 180) {
   modelSettingsTimer = setTimeout(() => applyModelSettingsFromUI(), delay);
 }
 
+async function writeTextToClipboard(text, fallbackTarget) {
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable');
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    try {
+      fallbackTarget?.focus();
+      fallbackTarget?.select();
+      return Boolean(document.execCommand('copy'));
+    } catch {
+      return false;
+    }
+  }
+}
+
 async function copyRecapOutput() {
   const output = $('recapOutput');
   if (!output?.value) return;
+  const copied = await writeTextToClipboard(output.value, output);
+  logStatus(copied ? 'Copied recap text to clipboard.' : 'Could not copy automatically. Select the recap text and copy it manually.');
+}
+
+function attemptChatGPTAppOpen() {
+  if (typeof document === 'undefined') return false;
+  const link = document.createElement('a');
+  link.href = 'chatgpt://onboard';
+  link.hidden = true;
+  link.setAttribute('aria-hidden', 'true');
   try {
-    await navigator.clipboard.writeText(output.value);
+    document.body.appendChild(link);
+    link.click();
+    window.setTimeout(() => link.remove(), 0);
+    return true;
   } catch {
-    output.focus();
-    output.select();
-    document.execCommand('copy');
+    link.remove();
+    return false;
   }
-  logStatus('Copied recap text to clipboard.');
+}
+
+async function copyAndSendRecapToChatGPT() {
+  const output = $('recapOutput');
+  const prompt = output?.value?.trim();
+  if (!prompt) {
+    logStatus('Generate a recap before sending it to ChatGPT.');
+    return;
+  }
+
+  const league = getSelectedLeague();
+  const copyPromise = writeTextToClipboard(prompt, output);
+  const shareData = {
+    title: `${league?.name || 'Sleeper Shield'} recap`,
+    text: prompt
+  };
+  let canShare = typeof navigator.share === 'function';
+  if (canShare && typeof navigator.canShare === 'function') {
+    try {
+      canShare = navigator.canShare(shareData);
+    } catch {
+      canShare = false;
+    }
+  }
+
+  if (canShare) {
+    try {
+      logStatus('Recap copied. Choose ChatGPT in the share sheet.');
+      await navigator.share(shareData);
+      const copied = await copyPromise;
+      logStatus(copied
+        ? 'Shared the full recap prompt and kept a copy on the clipboard.'
+        : 'Shared the full recap prompt to the selected app.');
+      return;
+    } catch (error) {
+      const copied = await copyPromise;
+      if (error?.name === 'AbortError') {
+        logStatus(copied ? 'Sharing canceled; the full prompt is still copied.' : 'Sharing canceled.');
+        return;
+      }
+    }
+  }
+
+  const copied = await copyPromise;
+  const appOpenAttempted = attemptChatGPTAppOpen();
+  logStatus(copied
+    ? `${appOpenAttempted ? 'Copied the full prompt and attempted to open ChatGPT.' : 'Copied the full prompt.'} Paste it into the composer to send.`
+    : `${appOpenAttempted ? 'Attempted to open ChatGPT, but automatic copying was blocked.' : 'Automatic handoff and copying were blocked.'} Copy the recap manually.`);
 }
 
 function wireEvents() {
@@ -6244,7 +6420,13 @@ function wireEvents() {
 
   $('recapWeekSelect')?.addEventListener('change', () => scheduleRecapGeneration(0));
   $('recapRangeSelect')?.addEventListener('change', () => scheduleRecapGeneration(0));
+  $('recapStyleSelect')?.addEventListener('change', event => {
+    state.recapStyle = normalizeRecapStyle(event.target.value);
+    localStorage.setItem(STORAGE_KEYS.recapStyle, state.recapStyle);
+    scheduleRecapGeneration(0);
+  });
   $('copyRecapBtn')?.addEventListener('click', copyRecapOutput);
+  $('sendRecapToChatGPTBtn')?.addEventListener('click', copyAndSendRecapToChatGPT);
   $('exportDataBtn')?.addEventListener('click', exportData);
 
   ['draftTeamSelect', 'draftSeasonSelect', 'draftPositionFilter'].forEach(id => {
@@ -6311,6 +6493,13 @@ function applySettingsToUI() {
   }
 }
 
+function applyRecapStyleToUI() {
+  const select = $('recapStyleSelect');
+  if (!select) return;
+  state.recapStyle = normalizeRecapStyle(state.recapStyle);
+  select.value = state.recapStyle;
+}
+
 function updateDynastyOnlyControls() {
   const league = getSelectedLeague();
   const dynasty = Boolean(league && isDynastyLeague(league));
@@ -6323,6 +6512,7 @@ function updateDynastyOnlyControls() {
 async function boot() {
   wireEvents();
   applySettingsToUI();
+  applyRecapStyleToUI();
   saveLeagueIds(state.savedLeagueIds);
   renderEverything();
   try {
@@ -6340,6 +6530,10 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     state,
     DEFAULT_SETTINGS,
+    DEFAULT_RECAP_STYLE,
+    RECAP_STYLES,
+    normalizeRecapStyle,
+    recapPromptForRange,
     savedMyTeamRosterId,
     defaultTeamRosterId,
     teamSelectDefaultValue,
@@ -6372,6 +6566,8 @@ if (typeof module !== 'undefined' && module.exports) {
     optimalProjectedLineupScore,
     rosterNeedProfile,
     teamFitImpact,
+    freeAgencyPositionOptions,
+    freeAgentMatchesPositionFilter,
     freeAgentCandidates,
     dropCandidatesForPickup,
     tradeTargetRecommendations,

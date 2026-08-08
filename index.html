@@ -316,17 +316,7 @@
             </label>
             <label>Position
               <select id="freeAgencyPositionFilter">
-                <option value="NEED">Prioritize team needs</option>
-                <option value="ALL">Best available</option>
-                <option value="QB">QB</option>
-                <option value="RB">RB</option>
-                <option value="WR">WR</option>
-                <option value="TE">TE</option>
-                <option value="DL">DL</option>
-                <option value="LB">LB</option>
-                <option value="DB">DB</option>
-                <option value="K">K</option>
-                <option value="DEF">DEF</option>
+                <option value="ALL">Best Available</option>
               </select>
             </label>
           </div>
@@ -435,10 +425,21 @@
                 <option value="draft">Draft recap</option>
               </select>
             </label>
+            <label>Style
+              <select id="recapStyleSelect" aria-describedby="recapStyleHint">
+                <option value="clean">Clean Analyst — clear and data-first</option>
+                <option value="commissioner">Commissioner Roast — jokes and trash talk</option>
+                <option value="broadcast">Broadcast Booth — game-day drama</option>
+                <option value="front-office">Front Office GM — roster strategy</option>
+                <option value="pat-mcafee" selected>Pat McAfee Show — sports-talk sarcasm</option>
+              </select>
+            </label>
             <div class="recap-action-wrap">
               <button id="copyRecapBtn" class="primary" type="button">Copy recap</button>
+              <button id="sendRecapToChatGPTBtn" class="secondary" type="button">Copy &amp; send to ChatGPT</button>
             </div>
           </div>
+          <p id="recapStyleHint" class="hint recap-share-hint">The Pat McAfee Show option uses high-energy football-talk humor without impersonating a host or copying signature catchphrases. On mobile, choose ChatGPT in the share sheet; the complete prompt is copied as a fallback.</p>
           <textarea id="recapOutput" class="output" rows="22" aria-label="Generated recap" placeholder="Your recap will appear here automatically."></textarea>
         </section>
       </section>
@@ -623,7 +624,7 @@
             <div>
               <h4>Pickup process</h4>
               <ol>
-                <li>Select your team and choose Best fit or a position.</li>
+                <li>Select your team and choose Best Available or a league-supported position. IDP combines defensive line, linebacker, and defensive back.</li>
                 <li>Open Weekly Stats on a target to check ownership, starts, snaps, and how he actually earned points.</li>
                 <li>Select Analyze pickup to see drop options.</li>
                 <li>Compare market-value change, lineup change, and depth change together.</li>
@@ -694,7 +695,7 @@
           </div>
           <div class="guide-columns">
             <div><h4>Home</h4><p>Use standings, modeled roster strength, and league-rule summaries as a quick context check. Roster strength is an outlook, not a duplicate of win-loss record, so it can identify contenders whose record has lagged their underlying team.</p></div>
-            <div><h4>Recaps</h4><p>Select a week, recent four-week window, season-to-date range, offseason movement, or draft recap. The output is generated automatically and can be copied for league chat.</p></div>
+            <div><h4>Recaps</h4><p>Select a week, recent four-week window, season-to-date range, offseason movement, or draft recap. Choose an analyst, commissioner, broadcast, front-office, or Pat McAfee Show-inspired sports-talk treatment. Copy the package for league chat, or use Copy &amp; send to ChatGPT to share the complete prompt.</p></div>
           </div>
           <p>For the best recap, wait until Sleeper has finalized scoring and transactions for the selected range. Treat narrative labels as summaries of the loaded data, and review names and numbers before posting.</p>
           <button class="secondary inline-action" type="button" data-open-tab="recaps">Open Recaps</button>
