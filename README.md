@@ -20,6 +20,7 @@ Then open `http://localhost:5173`.
 - Weekly fantasy points preserve Sleeper's exact league matchup score when available. Other historical rows are rescored from Sleeper's stat line using the active league settings.
 - Position-specific stats are ordered from higher to lower league scoring value. Each scoring stat shows its raw result and point contribution; the asterisk notes that earned bonuses are included.
 - Lineups are optimized across the league's exact legal starter slots using matchup-specific projected stat lines scored under the league's settings. Missing weekly data falls back to season forecasts and is labeled clearly.
+- Recommendations preserve current starter slots when projected totals are equal. Players already starting in RB1/RB2, FLEX, Superflex, or IDP are labeled with their current slot; required slot moves are shown separately from actual bench-to-starter changes.
 - Every recommended starter is paired with the player currently occupying that exact Sleeper lineup slot, and both show the upcoming week's projected points for an immediate slot-by-slot comparison.
 - Matchup boosts and fades compare each player's weekly projection with his season baseline. Bye, out, IR/reserve, suspended, inactive, and taxi players are excluded, while injury-questionable players remain visible with a warning.
 - Trade dropdowns include rostered players and owned draft picks, including current-year rookie picks when the draft has not been completed.

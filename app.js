@@ -2074,7 +2074,8 @@ function weeklyProjectionForPlayer(league, playerId, options = {}) {
   };
 }
 
-function optimizeLineupAssignments(league, candidates = []) {
+function optimizeLineupAssignments(league, candidates = [], currentSlots = []) {
+  const currentBySlot = new Map(currentSlots.map(row => [Number(row.index), String(row.playerId || '')]));
   const slots = (league?.roster_positions || [])
     .map((slot, index) => ({ slot: String(slot).toUpperCase(), index }))
     .filter(({ slot }) => !['BN', 'BE', 'IR', 'TAXI'].includes(slot));
@@ -2091,7 +2092,9 @@ function optimizeLineupAssignments(league, candidates = []) {
     for (const slot of orderedSlots) {
       const chosen = usable
         .filter(candidate => !selected.has(candidate.playerId) && slotEligibility(slot.slot, candidate.playerId))
-        .sort((a, b) => b.points - a.points || b.confidence - a.confidence)[0];
+        .sort((a, b) => b.points - a.points
+          || Number(currentBySlot.get(slot.index) === String(b.playerId)) - Number(currentBySlot.get(slot.index) === String(a.playerId))
+          || b.confidence - a.confidence)[0];
       if (chosen) {
         selected.add(chosen.playerId);
         assignments.set(slot.index, chosen);
@@ -2109,6 +2112,7 @@ function optimizeLineupAssignments(league, candidates = []) {
   let states = new Map([[0, {
     score: 0,
     quality: 0,
+    retained: 0,
     assignments: Array(slots.length).fill(null)
   }]]);
 
@@ -2124,11 +2128,15 @@ function optimizeLineupAssignments(league, candidates = []) {
         const quality = current.quality
           + safeNumber(candidate.points, 0) * slotSpecificity
           + safeNumber(candidate.confidence, 0) * 0.01;
+        const retained = current.retained
+          + (currentBySlot.get(slots[slotIndex].index) === String(candidate.playerId) ? 1 : 0);
         const existing = states.get(nextMask);
-        if (existing && (existing.score > score + 0.0001 || (Math.abs(existing.score - score) <= 0.0001 && existing.quality >= quality))) continue;
+        if (existing && (existing.score > score + 0.0001
+          || (Math.abs(existing.score - score) <= 0.0001
+            && (existing.retained > retained || (existing.retained === retained && existing.quality >= quality))))) continue;
         const assignments = current.assignments.slice();
         assignments[slotIndex] = candidate;
-        states.set(nextMask, { score, quality, assignments });
+        states.set(nextMask, { score, quality, retained, assignments });
       }
     }
   }
@@ -2140,7 +2148,8 @@ function optimizeLineupAssignments(league, candidates = []) {
     const bestFilled = best.assignments.filter(Boolean).length;
     if (filled > bestFilled
       || (filled === bestFilled && candidate.score > best.score + 0.0001)
-      || (filled === bestFilled && Math.abs(candidate.score - best.score) <= 0.0001 && candidate.quality > best.quality)) {
+      || (filled === bestFilled && Math.abs(candidate.score - best.score) <= 0.0001 && (candidate.retained > best.retained
+        || (candidate.retained === best.retained && candidate.quality > best.quality)))) {
       bestMask = mask;
       best = candidate;
     }
@@ -2198,13 +2207,17 @@ function recommendedLineupForRoster(league, rosterId) {
       isTaxi: taxi.has(playerId),
       isReserve: reserve.has(playerId)
     }));
-  const optimized = optimizeLineupAssignments(league, candidates);
   const currentSlots = currentLineupSlotsForRoster(league, roster, candidates);
+  const optimized = optimizeLineupAssignments(league, candidates, currentSlots);
+  const currentByPlayer = new Map(currentSlots.filter(row => row.playerId).map(row => [String(row.playerId), row]));
+  const recommendedByPlayer = new Map(optimized.bySlot.filter(row => row.detail).map(row => [String(row.detail.playerId), row]));
   const currentBySlotIndex = new Map(currentSlots.map(row => [Number(row.index), row]));
   const starters = optimized.bySlot.map(row => ({
     slot: row.slot,
     slotIndex: row.index,
     detail: row.detail,
+    previousSlotIndex: currentByPlayer.get(String(row.detail?.playerId))?.index ?? null,
+    currentPlayerDestinationIndex: recommendedByPlayer.get(String(currentBySlotIndex.get(Number(row.index))?.playerId))?.index ?? null,
     currentPlayerId: currentBySlotIndex.get(Number(row.index))?.playerId || '',
     currentDetail: currentBySlotIndex.get(Number(row.index))?.detail || null,
     sameAsCurrent: Boolean(
@@ -2246,7 +2259,9 @@ function recommendedLineupForRoster(league, rosterId) {
     weeklyCount,
     filled: filledStarters.length,
     slotCount: starters.length,
-    currentSlots
+    currentSlots,
+    moves: starters.filter(row => row.detail && row.previousSlotIndex !== null && row.previousSlotIndex !== row.slotIndex)
+      .map(row => ({ playerId: row.detail.playerId, fromIndex: row.previousSlotIndex, toIndex: row.slotIndex }))
   };
 }
 
@@ -4290,7 +4305,7 @@ function lineupWeekProjectionLabel(period = upcomingLineupPeriod()) {
   return `W${safeNumber(period?.week, 1)} proj`;
 }
 
-function renderCurrentLineupPlayer(row, league) {
+function renderCurrentLineupPlayer(row, league, starters = []) {
   const detail = row.currentDetail;
   const projectionLabel = lineupWeekProjectionLabel();
   if (!detail) {
@@ -4307,7 +4322,10 @@ function renderCurrentLineupPlayer(row, league) {
       ? `<span class="lineup-status-badge warn">${escapeHtml(detail.status)}</span>`
       : '';
   const comparisonClass = row.sameAsCurrent ? ' matched' : ' swap';
-  const comparisonLabel = row.sameAsCurrent ? 'Current lineup · already set' : 'Current Sleeper lineup';
+  const destination = starters.find(other => other.slotIndex === row.currentPlayerDestinationIndex);
+  const comparisonLabel = row.sameAsCurrent ? 'Current lineup · already set'
+    : destination ? `Current starter · move to ${lineupSlotDisplay(destination.slot, destination.slotIndex, starters)}`
+      : 'Current starter · sit';
   return `<div class="lineup-current-player${comparisonClass}">
     <span class="lineup-current-label">${escapeHtml(comparisonLabel)}</span>
     <div class="lineup-current-copy">
@@ -4328,21 +4346,26 @@ function renderLineupStarterRow(row, starters, league) {
       <span class="lineup-slot">${escapeHtml(slotLabel)}</span>
       <div><h4>Open lineup slot</h4><p>No eligible active player found.</p></div>
       <div class="lineup-projection"><strong>0</strong><span>${escapeHtml(projectionLabel)}</span></div>
-      ${renderCurrentLineupPlayer(row, league)}
+      ${renderCurrentLineupPlayer(row, league, starters)}
     </article>`;
   }
   const opponent = detail.opponent ? ` vs ${detail.opponent}` : '';
   const sourceLabel = detail.source === 'weekly' ? 'Weekly projection' : 'Season baseline';
+  const previous = starters.find(other => other.slotIndex === row.previousSlotIndex);
+  const actionLabel = row.sameAsCurrent ? 'Already starting here'
+    : previous ? `Already starting at ${lineupSlotDisplay(previous.slot, previous.slotIndex, starters)} · move to ${slotLabel}`
+      : `Start at ${slotLabel}`;
   const injuryBadge = detail.injuryConcern ? `<span class="lineup-status-badge warn">${escapeHtml(detail.status)}</span>` : '';
   return `<article class="lineup-player-row">
     <span class="lineup-slot">${escapeHtml(slotLabel)}</span>
     <div class="lineup-player-copy">
       <h4>${escapeHtml(detail.name)} ${injuryBadge}</h4>
+      <p class="lineup-action">${escapeHtml(actionLabel)}</p>
       <p>${escapeHtml(detail.position)} · ${escapeHtml(detail.team)}${escapeHtml(opponent)} · ${escapeHtml(sourceLabel)}</p>
       <span class="lineup-matchup ${escapeHtml(detail.matchupTone)}">${escapeHtml(detail.matchupLabel)}${detail.source === 'weekly' && detail.baselinePpg ? ` · ${escapeHtml(displaySignedNumber(detail.matchupDelta))}` : ''}</span>
     </div>
     <div class="lineup-projection"><strong>${displayNumber(detail.points)}</strong><span>${escapeHtml(projectionLabel)}</span></div>
-    ${renderCurrentLineupPlayer(row, league)}
+    ${renderCurrentLineupPlayer(row, league, starters)}
     ${renderPlayerWeeklyDetailsDisclosure(league, detail.playerId, { compact: true })}
   </article>`;
 }
@@ -4369,17 +4392,24 @@ function renderLineupChanges(lineup) {
     output.innerHTML = `<strong>Week 1 planning mode</strong><span>Each slot still shows the starter currently saved in Sleeper. Start/sit change totals will activate when the regular-season lineup cycle begins.</span>`;
     return;
   }
-  if (!lineup.startIds.length && !lineup.sitIds.length) {
+  const moves = lineup.moves || [];
+  const moveMarkup = moves.map(move => {
+    const from = lineup.starters.find(row => row.slotIndex === move.fromIndex);
+    const to = lineup.starters.find(row => row.slotIndex === move.toIndex);
+    return `<b>${escapeHtml(playerName(move.playerId))}: ${escapeHtml(lineupSlotDisplay(from.slot, from.slotIndex, lineup.starters))} → ${escapeHtml(lineupSlotDisplay(to.slot, to.slotIndex, lineup.starters))}</b>`;
+  }).join('');
+  if (!lineup.startIds.length && !lineup.sitIds.length && !moves.length) {
     output.className = 'lineup-changes matched';
     output.innerHTML = '<strong>No changes recommended</strong><span>This lineup matches the team’s current Sleeper starters.</span>';
     return;
   }
   output.className = 'lineup-changes';
   output.innerHTML = `
-    <strong>${Math.max(lineup.startIds.length, lineup.sitIds.length)} recommended change${Math.max(lineup.startIds.length, lineup.sitIds.length) === 1 ? '' : 's'}</strong>
+    <strong>${Math.max(lineup.startIds.length, lineup.sitIds.length)} start/sit change${Math.max(lineup.startIds.length, lineup.sitIds.length) === 1 ? '' : 's'}${moves.length ? ` · ${moves.length} slot move${moves.length === 1 ? '' : 's'}` : ''}</strong>
     <div class="lineup-change-groups">
       <span><small>Start</small>${lineup.startIds.map(playerId => `<b>${escapeHtml(playerName(playerId))}</b>`).join('') || '<b>—</b>'}</span>
       <span><small>Sit</small>${lineup.sitIds.map(playerId => `<b>${escapeHtml(playerName(playerId))}</b>`).join('') || '<b>—</b>'}</span>
+      ${moves.length ? `<span><small>Move · already starting</small>${moveMarkup}</span>` : ''}
     </div>`;
 }
 
@@ -6680,6 +6710,7 @@ if (typeof module !== 'undefined' && module.exports) {
     currentLineupSlotsForRoster,
     recommendedLineupForRoster,
     renderLineupStarterRow,
+    renderLineupChanges,
     projectionIntrinsicValue,
     playerValue,
     optimalProjectedLineupScore,
